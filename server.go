@@ -105,7 +105,10 @@ func New(handler *Handler, opts ...option) *Server {
 		listeners: make([]listener, runtime.GOMAXPROCS(0)),
 		wbuffers: sync.Pool{
 			New: func() any {
-				return bytes.NewBuffer(make([]byte, DefaultBufferSize))
+				return &wbuf{
+					b: bytes.NewBuffer(make([]byte, DefaultBufferSize)),
+					c: newWriteCodec(),
+				}
 			},
 		},
 		readDeadline:        DefaultReadDeadline,

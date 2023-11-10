@@ -7,11 +7,17 @@ import (
 	"time"
 )
 
+// holds a write buffer and codec
+type wbuf struct {
+	b *bytes.Buffer
+	c *codec
+}
+
 // wrapped net.Conn with on demand buffers that implements the net.Conn interface
 type bufconn struct {
 	net.Conn                       // the wrapped conn
 	p        *sync.Pool            // the write buffer pool
-	b        *bytes.Buffer         // the write buffer
+	b        *wbuf                 // the write buffer containing a write buffer and codec
 	m        sync.Mutex            // the write lock
 	f        time.Duration         // the time to flush the buffer after
 	l        int                   // the size to flush the buffer after
@@ -44,23 +50,30 @@ func (c *bufconn) Write(b []byte) (int, error) {
 
 	// if we don't have a write buffer, then get one from the pool
 	if c.b == nil {
-		c.b = c.p.Get().(*bytes.Buffer)
-		c.b.Reset()
+		c.b = c.p.Get().(*wbuf)
+		c.b.b.Reset()
 	}
 
-	// write to the buffer
-	n, err := c.b.Write(b)
+	// write the ws header and data to the buffer
+	err := c.b.c.WriteHeader(c.b.b, header{
+		OpCode: opBinary,
+		Fin:    true,
+		Length: int64(len(b)),
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	n, err := c.b.b.Write(b)
 	if err != nil {
 		return n, err
 	}
 
-	// TODO WRITE HEADERS TO THE BUFFER!!!!!!
-
 	// if this buffer is at our high water mark, then flush it to the
 	// underlying connection and release the buffer to the pool
-	if c.b.Len() >= c.l {
+	if c.b.b.Len() >= c.l {
 		// write all data
-		n, err := c.b.WriteTo(c.Conn)
+		n, err := c.b.b.WriteTo(c.Conn)
 
 		// return the buffer and remove it from this connection
 		c.p.Put(c.b)
@@ -71,23 +84,32 @@ func (c *bufconn) Write(b []byte) (int, error) {
 
 	// schedule our buffer to be flushed if it is not already
 	if !c.s {
+		c.s = true
+
 		time.AfterFunc(c.f, func() {
 			c.m.Lock()
 			defer func() {
 				// return the buffer and remove it from this connection
-				c.p.Put(c.b)
-				c.b = nil
+				if c.b != nil {
+					c.p.Put(c.b)
+					c.b = nil
+				}
+
+				c.s = false
 				c.m.Unlock()
 			}()
 
 			// someone else has flushed the buffer, so exit
-			if c.b.Len() < 1 {
+			if c.b == nil {
+				return
+			}
+
+			if c.b.b.Len() < 1 {
 				return
 			}
 
 			// write all data
-			_, err = c.b.WriteTo(c.Conn)
-
+			_, err = c.b.b.WriteTo(c.Conn)
 			if err != nil {
 				// mark the connection as closed and call the error callback
 				c.c = true

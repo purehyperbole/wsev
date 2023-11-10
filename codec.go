@@ -79,7 +79,7 @@ func newWriteCodec() *codec {
 // ported from gobwas/ws to support reuse of the allocated frame header
 func (c *codec) ReadHeader(r io.Reader) (h header, err error) {
 	// Prepare to hold first 2 bytes to choose size of next read.
-	_, err = io.ReadFull(r, c.rbts) //[:2])
+	_, err = io.ReadFull(r, c.rbts[:2])
 	if err != nil {
 		return
 	}

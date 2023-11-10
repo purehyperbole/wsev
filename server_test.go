@@ -2,9 +2,11 @@ package wsev
 
 import (
 	"bufio"
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"testing"
@@ -18,6 +20,17 @@ type testevent struct {
 	conn net.Conn
 	msg  []byte
 	err  error
+}
+
+var testport int = 8000
+
+func nexttestport() (int, string) {
+	port := testport
+	address := fmt.Sprintf("localhost:%d", port)
+
+	testport++
+
+	return port, address
 }
 
 func TestServerConnect(t *testing.T) {
@@ -39,11 +52,13 @@ func TestServerConnect(t *testing.T) {
 		},
 	)
 
-	err := s.Serve(9000)
+	port, address := nexttestport()
+
+	err := s.Serve(port)
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://localhost:9000", nil)
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
 	require.Nil(t, err)
 
 	req.Header.Set("Connection", "Upgrade")
@@ -51,7 +66,7 @@ func TestServerConnect(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Version", "13")
 	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
 
-	conn, err := net.Dial("tcp", "localhost:9000")
+	conn, err := net.Dial("tcp", address)
 	require.Nil(t, err)
 	defer conn.Close()
 
@@ -89,11 +104,13 @@ func TestServerDisconnect(t *testing.T) {
 		},
 	)
 
-	err := s.Serve(9000)
+	port, address := nexttestport()
+
+	err := s.Serve(port)
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://localhost:9000", nil)
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
 	require.Nil(t, err)
 
 	req.Header.Set("Connection", "Upgrade")
@@ -101,7 +118,7 @@ func TestServerDisconnect(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Version", "13")
 	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
 
-	conn, err := net.Dial("tcp", "localhost:9000")
+	conn, err := net.Dial("tcp", address)
 	require.Nil(t, err)
 	defer conn.Close()
 
@@ -146,11 +163,13 @@ func TestServerDisconnectTimeout(t *testing.T) {
 		WithReadDeadline(time.Millisecond*100),
 	)
 
-	err := s.Serve(9000)
+	port, address := nexttestport()
+
+	err := s.Serve(port)
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://localhost:9000", nil)
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
 	require.Nil(t, err)
 
 	req.Header.Set("Connection", "Upgrade")
@@ -158,7 +177,7 @@ func TestServerDisconnectTimeout(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Version", "13")
 	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
 
-	conn, err := net.Dial("tcp", "localhost:9000")
+	conn, err := net.Dial("tcp", address)
 	require.Nil(t, err)
 	defer conn.Close()
 
@@ -189,11 +208,13 @@ func TestServerPong(t *testing.T) {
 		WithReadDeadline(time.Millisecond*100),
 	)
 
-	err := s.Serve(9000)
+	port, address := nexttestport()
+
+	err := s.Serve(port)
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://localhost:9000", nil)
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
 	require.Nil(t, err)
 
 	req.Header.Set("Connection", "Upgrade")
@@ -201,7 +222,7 @@ func TestServerPong(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Version", "13")
 	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
 
-	conn, err := net.Dial("tcp", "localhost:9000")
+	conn, err := net.Dial("tcp", address)
 	require.Nil(t, err)
 	defer conn.Close()
 
@@ -231,7 +252,148 @@ func TestServerPong(t *testing.T) {
 	assert.True(t, h.Fin)
 }
 
-func TestServerSendSmall(t *testing.T) {
+func TestServerSendUnmasked(t *testing.T) {
+	opench := make(chan *testevent, 1)
+	closech := make(chan *testevent, 1)
+
+	s := New(
+		&Handler{
+			OnConnect: func(conn net.Conn) {
+				opench <- &testevent{conn: conn}
+			},
+			OnDisconnect: func(conn net.Conn, err error) {
+				closech <- &testevent{conn: conn, err: err}
+			},
+		},
+		WithWriteBufferDeadline(time.Millisecond),
+	)
+
+	port, address := nexttestport()
+
+	err := s.Serve(port)
+	require.Nil(t, err)
+	defer s.Close()
+
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
+	require.Nil(t, err)
+
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
+
+	recv, err := net.Dial("tcp", address)
+	require.Nil(t, err)
+	defer recv.Close()
+
+	err = req.Write(recv)
+	require.Nil(t, err)
+
+	send, err := timeoutValue(opench, time.Millisecond*100)
+	require.Nil(t, err)
+
+	resp, err := http.ReadResponse(bufio.NewReader(recv), req)
+	require.Nil(t, err)
+	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
+	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+	codec := newCodec()
+	data := make([]byte, 8)
+
+	for i := 0; i < 10; i++ {
+		binary.LittleEndian.PutUint64(data, uint64(i))
+
+		_, err := (*send).conn.Write(data)
+		require.Nil(t, err)
+
+		h, err := codec.ReadHeader(recv)
+		require.Nil(t, err)
+		assert.Equal(t, int64(8), h.Length)
+
+		rdata := make([]byte, h.Length)
+		recv.Read(rdata)
+		assert.Equal(t, data, rdata)
+	}
+}
+
+func TestServerSendMasked(t *testing.T) {
+	opench := make(chan *testevent, 1)
+	closech := make(chan *testevent, 1)
+
+	s := New(
+		&Handler{
+			OnConnect: func(conn net.Conn) {
+				opench <- &testevent{conn: conn}
+			},
+			OnDisconnect: func(conn net.Conn, err error) {
+				closech <- &testevent{conn: conn, err: err}
+			},
+		},
+		WithWriteBufferDeadline(time.Millisecond),
+	)
+
+	port, address := nexttestport()
+
+	err := s.Serve(port)
+	require.Nil(t, err)
+	defer s.Close()
+
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
+	require.Nil(t, err)
+
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
+
+	recv, err := net.Dial("tcp", address)
+	require.Nil(t, err)
+	defer recv.Close()
+
+	err = req.Write(recv)
+	require.Nil(t, err)
+
+	send, err := timeoutValue(opench, time.Millisecond*100)
+	require.Nil(t, err)
+
+	resp, err := http.ReadResponse(bufio.NewReader(recv), req)
+	require.Nil(t, err)
+	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
+	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+	codec := newCodec()
+	data := make([]byte, 8)
+
+	for i := 0; i < 10; i++ {
+		binary.LittleEndian.PutUint64(data, uint64(i))
+
+		h := header{
+			OpCode: opBinary,
+			Fin:    true,
+			Masked: true,
+			Length: 8,
+		}
+
+		// mask the data
+		cipher(data, h.Mask, 0)
+
+		err = codec.WriteHeader((*send).conn.(*bufconn).Conn, h)
+		require.Nil(t, err)
+
+		_, err := (*send).conn.(*bufconn).Conn.Write(data)
+		require.Nil(t, err)
+
+		h, err = codec.ReadHeader(recv)
+		require.Nil(t, err)
+		assert.Equal(t, int64(8), h.Length)
+
+		rdata := make([]byte, h.Length)
+		recv.Read(rdata)
+		assert.Equal(t, data, rdata)
+	}
+}
+
+func TestServerReceiveSmall(t *testing.T) {
 	opench := make(chan *testevent, 1)
 	closech := make(chan *testevent, 1)
 	msgchan := make(chan *testevent, 1)
@@ -254,11 +416,13 @@ func TestServerSendSmall(t *testing.T) {
 		},
 	)
 
-	err := s.Serve(9000)
+	port, address := nexttestport()
+
+	err := s.Serve(port)
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://localhost:9000", nil)
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
 	require.Nil(t, err)
 
 	req.Header.Set("Connection", "Upgrade")
@@ -266,7 +430,7 @@ func TestServerSendSmall(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Version", "13")
 	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
 
-	conn, err := net.Dial("tcp", "localhost:9000")
+	conn, err := net.Dial("tcp", address)
 	require.Nil(t, err)
 	defer conn.Close()
 
@@ -298,7 +462,148 @@ func TestServerSendSmall(t *testing.T) {
 
 		require.Nil(t, timeout(msgchan, time.Millisecond*100))
 	}
+}
 
+func TestServerReceiveLarge(t *testing.T) {
+	opench := make(chan *testevent, 1)
+	closech := make(chan *testevent, 1)
+	msgchan := make(chan *testevent, 1)
+
+	data := make([]byte, 1<<16)
+	rand.Read(data)
+
+	s := New(
+		&Handler{
+			OnConnect: func(conn net.Conn) {
+				opench <- &testevent{conn: conn}
+			},
+			OnDisconnect: func(conn net.Conn, err error) {
+				closech <- &testevent{conn: conn, err: err}
+			},
+			OnMessage: func(conn net.Conn, msg []byte) {
+				assert.Equal(t, data, msg)
+				msgchan <- &testevent{conn: conn}
+			},
+		},
+	)
+
+	port, address := nexttestport()
+
+	err := s.Serve(port)
+	require.Nil(t, err)
+	defer s.Close()
+
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
+	require.Nil(t, err)
+
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
+
+	conn, err := net.Dial("tcp", address)
+	require.Nil(t, err)
+	defer conn.Close()
+
+	err = req.Write(conn)
+	require.Nil(t, err)
+	require.Nil(t, timeout(opench, time.Millisecond*100))
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	require.Nil(t, err)
+	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
+	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+	codec := newCodec()
+
+	for i := 0; i < 100; i++ {
+		err = codec.WriteHeader(conn, header{
+			OpCode: opBinary,
+			Fin:    true,
+			Length: int64(len(data)),
+		})
+
+		require.Nil(t, err)
+
+		_, err := conn.Write(data)
+		require.Nil(t, err)
+		require.Nil(t, timeout(msgchan, time.Millisecond*500))
+	}
+}
+
+func TestServerReceiveMasked(t *testing.T) {
+	opench := make(chan *testevent, 1)
+	closech := make(chan *testevent, 1)
+	msgchan := make(chan *testevent, 1)
+
+	data := make([]byte, 1<<16)
+	rand.Read(data)
+
+	s := New(
+		&Handler{
+			OnConnect: func(conn net.Conn) {
+				opench <- &testevent{conn: conn}
+			},
+			OnDisconnect: func(conn net.Conn, err error) {
+				closech <- &testevent{conn: conn, err: err}
+			},
+			OnMessage: func(conn net.Conn, msg []byte) {
+				assert.Equal(t, data, msg)
+				msgchan <- &testevent{conn: conn}
+			},
+		},
+	)
+
+	port, address := nexttestport()
+
+	err := s.Serve(port)
+	require.Nil(t, err)
+	defer s.Close()
+
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
+	require.Nil(t, err)
+
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
+
+	conn, err := net.Dial("tcp", address)
+	require.Nil(t, err)
+	defer conn.Close()
+
+	err = req.Write(conn)
+	require.Nil(t, err)
+	require.Nil(t, timeout(opench, time.Millisecond*100))
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	require.Nil(t, err)
+	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
+	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+	codec := newCodec()
+
+	for i := 0; i < 100; i++ {
+		mcopy := make([]byte, len(data))
+		copy(mcopy, data)
+
+		h := header{
+			OpCode: opBinary,
+			Fin:    true,
+			Masked: true,
+			Length: int64(len(data)),
+		}
+
+		// mask the data
+		cipher(mcopy, h.Mask, 0)
+
+		err = codec.WriteHeader(conn, h)
+		require.Nil(t, err)
+
+		_, err := conn.Write(mcopy)
+		require.Nil(t, err)
+		require.Nil(t, timeout(msgchan, time.Millisecond*500))
+	}
 }
 
 func timeout[T any](ch chan T, after time.Duration) error {
