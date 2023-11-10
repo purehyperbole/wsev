@@ -116,6 +116,9 @@ func main() {
         },
         OnMessage: func(conn net.Conn, msg []byte) {
             // a message has been recevied, broadcast it to the other connections
+            lock.Lock()
+            defer lock.Unlock()
+
             _, err := io.MultiWriter(connections...).Write(msg)
             if err != nil {
             	log.Printf("failed to write to connections: %s", err.Error())
