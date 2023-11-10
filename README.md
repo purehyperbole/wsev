@@ -81,60 +81,6 @@ func main() {
 package main
 
 import (
-    "log"
-    "net"
-    "runtime"
-    "sync"
-
-    "github.com/purehyperbole/wsev"
-)
-
-func main() {
-    // keep a list of all connected members
-    var connections []net.Conn
-    var lock sync.Mutex
-
-    h := &wsev.Handler{
-        OnConnect: func(conn net.Conn) {
-            // client has connected, so add it to the list
-            lock.Lock()
-            defer lock.Unlock()
-
-            connections = append(connections, conn)
-        },
-        OnDisconnect: func(conn net.Conn, err error) {
-            // client has disconnected, so remove it from the li
-    err := wsev.New(
-        h, 
-        // the deadline that will be set when reading from sockets that have data
-        wsev.WithReadDeadline(time.Millisecond*100),
-        // the deadline that data will be flushed to the underlying connection 
-        // when the data in the buffer has not exceeded the buffer size
-        wsev.WithWriteBufferDeadline(time.Millisecond * 100),
-        // the size of the write buffer for a connection. these buffers are 
-        // only allocated and used when there is data ready for writing to
-        // the connection. Once the buffer has been flushed, the buffer is
-        // returned to a pool for reuse. 
-        wsev.WithWriteBufferSize(1<<14),
-        // sets the size of the read buffer for reading from the connection.
-        // a read buffer is allocated per event loop
-        wsev.WithReadBufferSize(1<<14),
-    ).Serve(8000)
-
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    runtime.Goexit()
-}
-```
-
-## Example - Chat Room
-
-```go
-package main
-
-import (
 	"io"
     "log"
     "net"
