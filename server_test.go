@@ -40,13 +40,13 @@ func TestServerConnect(t *testing.T) {
 
 	s := New(
 		&Handler{
-			OnConnect: func(conn net.Conn) {
+			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
-			OnDisconnect: func(conn net.Conn, err error) {
+			OnDisconnect: func(conn *Conn, err error) {
 				closech <- &testevent{conn: conn, err: err}
 			},
-			OnMessage: func(conn net.Conn, msg []byte) {
+			OnMessage: func(conn *Conn, msg []byte) {
 				msgch <- &testevent{conn: conn, msg: msg}
 			},
 		},
@@ -92,13 +92,13 @@ func TestServerDisconnect(t *testing.T) {
 
 	s := New(
 		&Handler{
-			OnConnect: func(conn net.Conn) {
+			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
-			OnDisconnect: func(conn net.Conn, err error) {
+			OnDisconnect: func(conn *Conn, err error) {
 				closech <- &testevent{conn: conn, err: err}
 			},
-			OnMessage: func(conn net.Conn, msg []byte) {
+			OnMessage: func(conn *Conn, msg []byte) {
 				msgch <- &testevent{conn: conn, msg: msg}
 			},
 		},
@@ -150,13 +150,13 @@ func TestServerDisconnectTimeout(t *testing.T) {
 
 	s := New(
 		&Handler{
-			OnConnect: func(conn net.Conn) {
+			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
-			OnDisconnect: func(conn net.Conn, err error) {
+			OnDisconnect: func(conn *Conn, err error) {
 				closech <- &testevent{conn: conn, err: err}
 			},
-			OnMessage: func(conn net.Conn, msg []byte) {
+			OnMessage: func(conn *Conn, msg []byte) {
 				msgch <- &testevent{conn: conn, msg: msg}
 			},
 		},
@@ -195,13 +195,13 @@ func TestServerPong(t *testing.T) {
 
 	s := New(
 		&Handler{
-			OnConnect: func(conn net.Conn) {
+			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
-			OnDisconnect: func(conn net.Conn, err error) {
+			OnDisconnect: func(conn *Conn, err error) {
 				closech <- &testevent{conn: conn, err: err}
 			},
-			OnPing: func(conn net.Conn) {
+			OnPing: func(conn *Conn) {
 				pingch <- &testevent{conn: conn}
 			},
 		},
@@ -258,10 +258,10 @@ func TestServerSendUnmasked(t *testing.T) {
 
 	s := New(
 		&Handler{
-			OnConnect: func(conn net.Conn) {
+			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
-			OnDisconnect: func(conn net.Conn, err error) {
+			OnDisconnect: func(conn *Conn, err error) {
 				closech <- &testevent{conn: conn, err: err}
 			},
 		},
@@ -322,10 +322,10 @@ func TestServerSendMasked(t *testing.T) {
 
 	s := New(
 		&Handler{
-			OnConnect: func(conn net.Conn) {
+			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
-			OnDisconnect: func(conn net.Conn, err error) {
+			OnDisconnect: func(conn *Conn, err error) {
 				closech <- &testevent{conn: conn, err: err}
 			},
 		},
@@ -377,10 +377,10 @@ func TestServerSendMasked(t *testing.T) {
 		// mask the data
 		cipher(data, h.Mask, 0)
 
-		err = codec.WriteHeader((*send).conn.(*bufconn).Conn, h)
+		err = codec.WriteHeader((*send).conn.(*Conn).Conn, h)
 		require.Nil(t, err)
 
-		_, err := (*send).conn.(*bufconn).Conn.Write(data)
+		_, err := (*send).conn.(*Conn).Conn.Write(data)
 		require.Nil(t, err)
 
 		h, err = codec.ReadHeader(recv)
@@ -402,13 +402,13 @@ func TestServerReceiveSmall(t *testing.T) {
 
 	s := New(
 		&Handler{
-			OnConnect: func(conn net.Conn) {
+			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
-			OnDisconnect: func(conn net.Conn, err error) {
+			OnDisconnect: func(conn *Conn, err error) {
 				closech <- &testevent{conn: conn, err: err}
 			},
-			OnMessage: func(conn net.Conn, msg []byte) {
+			OnMessage: func(conn *Conn, msg []byte) {
 				assert.Equal(t, counter, binary.LittleEndian.Uint64(msg))
 				counter++
 				msgchan <- &testevent{conn: conn}
@@ -474,13 +474,13 @@ func TestServerReceiveLarge(t *testing.T) {
 
 	s := New(
 		&Handler{
-			OnConnect: func(conn net.Conn) {
+			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
-			OnDisconnect: func(conn net.Conn, err error) {
+			OnDisconnect: func(conn *Conn, err error) {
 				closech <- &testevent{conn: conn, err: err}
 			},
-			OnMessage: func(conn net.Conn, msg []byte) {
+			OnMessage: func(conn *Conn, msg []byte) {
 				assert.Equal(t, data, msg)
 				msgchan <- &testevent{conn: conn}
 			},
@@ -541,13 +541,13 @@ func TestServerReceiveMasked(t *testing.T) {
 
 	s := New(
 		&Handler{
-			OnConnect: func(conn net.Conn) {
+			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
-			OnDisconnect: func(conn net.Conn, err error) {
+			OnDisconnect: func(conn *Conn, err error) {
 				closech <- &testevent{conn: conn, err: err}
 			},
-			OnMessage: func(conn net.Conn, msg []byte) {
+			OnMessage: func(conn *Conn, msg []byte) {
 				assert.Equal(t, data, msg)
 				msgchan <- &testevent{conn: conn}
 			},

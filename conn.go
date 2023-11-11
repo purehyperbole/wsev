@@ -13,21 +13,21 @@ type wbuf struct {
 	c *codec
 }
 
-// wrapped net.Conn with on demand buffers that implements the net.Conn interface
-type bufconn struct {
-	net.Conn                       // the wrapped conn
-	p        *sync.Pool            // the write buffer pool
-	b        *wbuf                 // the write buffer containing a write buffer and codec
-	m        sync.Mutex            // the write lock
-	f        time.Duration         // the time to flush the buffer after
-	l        int                   // the size to flush the buffer after
-	s        bool                  // is this connection scheduled to be flushed already?
-	c        bool                  // is this connection closed after an error?
-	e        func(net.Conn, error) // callback to call upon flushing
+// A wrapped net.Conn with on demand buffers that implements the net.Conn interface
+type Conn struct {
+	net.Conn                    // the wrapped conn
+	p        *sync.Pool         // the write buffer pool
+	b        *wbuf              // the write buffer containing a write buffer and codec
+	m        sync.Mutex         // the write lock
+	f        time.Duration      // the time to flush the buffer after
+	l        int                // the size to flush the buffer after
+	s        bool               // is this connection scheduled to be flushed already?
+	c        bool               // is this connection closed after an error?
+	e        func(*Conn, error) // callback to call upon flushing
 }
 
-func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, bufsize int, errCallback func(net.Conn, error)) *bufconn {
-	return &bufconn{
+func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, bufsize int, errCallback func(*Conn, error)) *Conn {
+	return &Conn{
 		Conn: conn,
 		p:    bufpool,
 		f:    flush,
@@ -36,10 +36,25 @@ func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, bufsize 
 	}
 }
 
-// Write writes data to the connection via a buffer
+// Write writes binary data to the connection via a buffer
 // Write can be made to time out and return an error after a fixed
 // time limit; see SetDeadline and SetWriteDeadline.
-func (c *bufconn) Write(b []byte) (int, error) {
+func (c *Conn) Write(b []byte) (int, error) {
+	return c.write(opText, len(b), func(buf *bytes.Buffer) (int, error) {
+		return buf.Write(b)
+	})
+}
+
+// WriteText writes text data to the connection via a buffer
+// Write can be made to time out and return an error after a fixed
+// time limit; see SetDeadline and SetWriteDeadline.
+func (c *Conn) WriteText(s string) (int, error) {
+	return c.write(opText, len(s), func(buf *bytes.Buffer) (int, error) {
+		return buf.WriteString(s)
+	})
+}
+
+func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, error)) (int, error) {
 	c.m.Lock()
 	defer c.m.Unlock()
 
@@ -58,13 +73,13 @@ func (c *bufconn) Write(b []byte) (int, error) {
 	err := c.b.c.WriteHeader(c.b.b, header{
 		OpCode: opBinary,
 		Fin:    true,
-		Length: int64(len(b)),
+		Length: int64(size),
 	})
 	if err != nil {
 		return 0, err
 	}
 
-	n, err := c.b.b.Write(b)
+	n, err := wcb(c.b.b)
 	if err != nil {
 		return n, err
 	}
@@ -109,7 +124,7 @@ func (c *bufconn) Write(b []byte) (int, error) {
 			}
 
 			// write all data
-			_, err = c.b.b.WriteTo(c.Conn)
+			_, err := c.b.b.WriteTo(c.Conn)
 			if err != nil {
 				// mark the connection as closed and call the error callback
 				c.c = true
@@ -118,5 +133,5 @@ func (c *bufconn) Write(b []byte) (int, error) {
 		})
 	}
 
-	return len(b), nil
+	return size, nil
 }

@@ -73,17 +73,25 @@ type listener struct {
 
 type Handler struct {
 	// OnConnect is invoked upon a new connection
-	OnConnect func(conn net.Conn)
+	OnConnect func(conn *Conn)
 	// OnDisconnect is invoked when an existing connection disconnects
-	OnDisconnect func(conn net.Conn, err error)
+	OnDisconnect func(conn *Conn, err error)
 	// OnPing is invoked when a connection sends a websocket ping frame
-	OnPing func(conn net.Conn)
+	OnPing func(conn *Conn)
 	// OnPong is invoked when a connection sends a websocket pong frame
-	OnPong func(conn net.Conn)
-	// OnMessage is invoked when a connection sends a message
+	OnPong func(conn *Conn)
+	// OnMessage is invoked when a connection sends either a text or
+	// binary message. the msg buffer that is passed is only safe for
+	// use until the callback returns
+	OnMessage func(conn *Conn, msg []byte)
+	// OnBinary is invoked when a connection sends a binary message.
 	// the msg buffer that is passed is only safe for use until the
 	// callback returns
-	OnMessage func(conn net.Conn, msg []byte)
+	OnBinary func(conn *Conn, msg []byte)
+	// OnText is invoked when a connection sends a text message.
+	// the msg buffer that is passed is only safe for use until the
+	// callback returns
+	OnText func(conn *Conn, msg string)
 	// OnError is invoked when an error occurs
 	OnError func(err error, isFatal bool)
 }
@@ -166,7 +174,7 @@ func (s *Server) Serve(port int) error {
 							continue
 						}
 
-						cn := conn.(net.Conn)
+						cn := conn.(*Conn)
 
 						if events[i].Events&unix.POLLHUP > 0 {
 							// this is a disconnect event
@@ -196,7 +204,7 @@ func (s *Server) Serve(port int) error {
 								s.handler.OnPong(cn)
 							}
 						case opPing:
-							err = pongWs(cn.(*bufconn).Conn, cd)
+							err = pongWs(cn.Conn, cd)
 							if err != nil {
 								s.disconnect(pid, fd, int(events[i].Fd), cn, err)
 								continue
@@ -207,9 +215,17 @@ func (s *Server) Serve(port int) error {
 							}
 						case opClose:
 							s.disconnect(pid, fd, int(events[i].Fd), cn, nil)
-						case opBinary, opText:
+						case opBinary:
 							if s.handler.OnMessage != nil {
 								s.handler.OnMessage(cn, fb.Bytes())
+							} else if s.handler.OnBinary != nil {
+								s.handler.OnBinary(cn, fb.Bytes())
+							}
+						case opText:
+							if s.handler.OnMessage != nil {
+								s.handler.OnMessage(cn, fb.Bytes())
+							} else if s.handler.OnText != nil {
+								s.handler.OnText(cn, fb.String())
 							}
 						}
 					}
@@ -241,7 +257,7 @@ func (s *Server) Serve(port int) error {
 					&s.wbuffers,
 					s.writeBufferDeadline,
 					s.writeBufferSize,
-					func(bc net.Conn, err error) {
+					func(bc *Conn, err error) {
 						s.disconnect(pid, fd, cfd, bc, err)
 					},
 				)
@@ -302,7 +318,7 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) disconnect(pid, fd, cfd int, conn net.Conn, err error) {
+func (s *Server) disconnect(pid, fd, cfd int, conn *Conn, err error) {
 	// ell epoll we don't need to monitor this connection anymore
 	err = unix.EpollCtl(fd, syscall.EPOLL_CTL_DEL, cfd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(cfd)})
 	if err != nil {
