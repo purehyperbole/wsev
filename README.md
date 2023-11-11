@@ -30,16 +30,16 @@ import (
 
 func main() {
     h := &wsev.Handler{
-        OnConnect: func(conn net.Conn) {
+        OnConnect: func(conn *wsev.Conn) {
             // client has connected
         },
-        OnDisconnect: func(conn net.Conn, err error) {
+        OnDisconnect: func(conn *wsev.Conn, err error) {
             // client has disconnected
         },
-        OnPing: func(conn net.Conn) {
+        OnPing: func(conn *wsev.Conn) {
             // client has sent pong
-        }
-        OnMessage: func(conn net.Conn, msg []byte) {
+        },
+        OnMessage: func(conn *wsev.Conn, msg []byte) {
             // client has sent a binary/text event
         },
         OnError: func(err error, isFatal bool) {
@@ -96,14 +96,14 @@ func main() {
     var lock sync.Mutex
 
     h := &wsev.Handler{
-        OnConnect: func(conn net.Conn) {
+        OnConnect: func(conn *wsev.Conn) {
             // client has connected, so add it to the list
             lock.Lock()
             defer lock.Unlock()
 
             connections = append(connections, conn)
         },
-        OnDisconnect: func(conn net.Conn, err error) {
+        OnDisconnect: func(conn *wsev.Conn, err error) {
             // client has disconnected, so remove it from the list
             lock.Lock()
             defer lock.Unlock()
@@ -114,7 +114,7 @@ func main() {
                 }
             }
         },
-        OnMessage: func(conn net.Conn, msg []byte) {
+        OnMessage: func(conn *wsev.Conn, msg []byte) {
             // a message has been recevied, broadcast it to the other connections
             lock.Lock()
             defer lock.Unlock()
