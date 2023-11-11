@@ -307,7 +307,11 @@ func (s *Server) disconnect(pid, fd, cfd int, conn net.Conn, err error) {
 	err = unix.EpollCtl(fd, syscall.EPOLL_CTL_DEL, cfd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(cfd)})
 	if err != nil {
 		s.error(err, false)
-		return
+	}
+
+	err = conn.Close()
+	if err != nil {
+		s.error(err, false)
 	}
 
 	// delete the connection from our connection list
