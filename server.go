@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -133,7 +132,7 @@ func (s *Server) Serve(port int) error {
 				return
 			}
 
-			go func(pid int) {
+			go func(pid, fd int) {
 				events := make([]syscall.EpollEvent, 128)
 
 				// TODO we can't rely on ReadDeadline for connections
@@ -171,7 +170,7 @@ func (s *Server) Serve(port int) error {
 
 						if events[i].Events&unix.POLLHUP > 0 {
 							// this is a disconnect event
-							s.disconnect(pid, int(events[i].Fd), cn, nil)
+							s.disconnect(pid, fd, int(events[i].Fd), cn, nil)
 						}
 
 						// reset the buffers and read a completed
@@ -181,13 +180,13 @@ func (s *Server) Serve(port int) error {
 
 						op, err := assembleFrames(cn, cd, rb, fb, s.readDeadline)
 						if err != nil {
-							s.disconnect(pid, int(events[i].Fd), cn, err)
+							s.disconnect(pid, fd, int(events[i].Fd), cn, err)
 							continue
 						}
 
 						err = cn.SetReadDeadline(time.Now().Add(s.readDeadline))
 						if err != nil {
-							s.disconnect(pid, int(events[i].Fd), cn, err)
+							s.disconnect(pid, fd, int(events[i].Fd), cn, err)
 							continue
 						}
 
@@ -199,7 +198,7 @@ func (s *Server) Serve(port int) error {
 						case opPing:
 							err = pongWs(cn.(*bufconn).Conn, cd)
 							if err != nil {
-								s.disconnect(pid, int(events[i].Fd), cn, err)
+								s.disconnect(pid, fd, int(events[i].Fd), cn, err)
 								continue
 							}
 
@@ -207,7 +206,7 @@ func (s *Server) Serve(port int) error {
 								s.handler.OnPing(cn)
 							}
 						case opClose:
-							s.disconnect(pid, int(events[i].Fd), cn, nil)
+							s.disconnect(pid, fd, int(events[i].Fd), cn, nil)
 						case opBinary, opText:
 							if s.handler.OnMessage != nil {
 								s.handler.OnMessage(cn, fb.Bytes())
@@ -215,25 +214,25 @@ func (s *Server) Serve(port int) error {
 						}
 					}
 				}
-			}(pid)
+			}(pid, fd)
 
 			mux := http.NewServeMux()
 			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 				conn, err := acceptWs(w, r)
 				if err != nil {
-					log.Printf("failed to upgrade ws: %s", err.Error())
+					s.error(fmt.Errorf("failed to upgrade ws: %w", err), false)
 					return
 				}
 
 				cfd, err := connectionFd(conn)
 				if err != nil {
-					log.Printf("failed to get ws file descriptor: %s", err.Error())
+					s.error(fmt.Errorf("failed to get ws file descriptor: %w", err), false)
 					return
 				}
 
 				err = unix.EpollCtl(fd, syscall.EPOLL_CTL_ADD, cfd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(cfd)})
 				if err != nil {
-					log.Printf("failed to add conn fd to epoll: %s", err.Error())
+					s.error(fmt.Errorf("failed to add conn fd to epoll: %w", err), false)
 					return
 				}
 
@@ -243,7 +242,7 @@ func (s *Server) Serve(port int) error {
 					s.writeBufferDeadline,
 					s.writeBufferSize,
 					func(bc net.Conn, err error) {
-						s.disconnect(pid, cfd, bc, err)
+						s.disconnect(pid, fd, cfd, bc, err)
 					},
 				)
 
@@ -303,9 +302,21 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) disconnect(pid, fd int, conn net.Conn, err error) {
+func (s *Server) disconnect(pid, fd, cfd int, conn net.Conn, err error) {
+	// fmt.Println("DISCONNECT", err)
+
 	// delete the connection from our connection list
-	s.listeners[pid].conns.Delete(fd)
+	// and tell epoll we don't need to monitor it anymore
+	_, ok := s.listeners[pid].conns.LoadAndDelete(cfd)
+	if !ok {
+		return
+	}
+
+	err = unix.EpollCtl(fd, syscall.EPOLL_CTL_DEL, cfd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(cfd)})
+	if err != nil {
+		s.error(err, false)
+		return
+	}
 
 	if s.handler.OnDisconnect != nil {
 		s.handler.OnDisconnect(conn, err)
