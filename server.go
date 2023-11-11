@@ -303,18 +303,16 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) disconnect(pid, fd, cfd int, conn net.Conn, err error) {
-	// fmt.Println("DISCONNECT", err)
-
-	// delete the connection from our connection list
-	// and tell epoll we don't need to monitor it anymore
-	_, ok := s.listeners[pid].conns.LoadAndDelete(cfd)
-	if !ok {
-		return
-	}
-
+	// ell epoll we don't need to monitor this connection anymore
 	err = unix.EpollCtl(fd, syscall.EPOLL_CTL_DEL, cfd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(cfd)})
 	if err != nil {
 		s.error(err, false)
+		return
+	}
+
+	// delete the connection from our connection list
+	_, ok := s.listeners[pid].conns.LoadAndDelete(cfd)
+	if !ok {
 		return
 	}
 
