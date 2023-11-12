@@ -2,6 +2,7 @@ package wsev
 
 import (
 	"bytes"
+	"encoding/binary"
 	"net"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 type wbuf struct {
 	b *bytes.Buffer
 	c *codec
+	s [2]byte
 }
 
 // A wrapped net.Conn with on demand buffers that implements the net.Conn interface
@@ -23,16 +25,16 @@ type Conn struct {
 	l        int                // the size to flush the buffer after
 	s        bool               // is this connection scheduled to be flushed already?
 	c        bool               // is this connection closed after an error?
-	e        func(*Conn, error) // callback to call upon flushing
+	q        func(*Conn, error) // callback to call upon closing the connection
 }
 
-func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, bufsize int, errCallback func(*Conn, error)) *Conn {
+func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, bufsize int, shutdownCallback func(*Conn, error)) *Conn {
 	return &Conn{
 		Conn: conn,
 		p:    bufpool,
 		f:    flush,
 		l:    bufsize,
-		e:    errCallback,
+		q:    shutdownCallback,
 	}
 }
 
@@ -52,6 +54,49 @@ func (c *Conn) WriteText(s string) (int, error) {
 	return c.write(opText, len(s), func(buf *bytes.Buffer) (int, error) {
 		return buf.WriteString(s)
 	})
+}
+
+// CloseWithReason writes
+func (c *Conn) CloseWithReason(status CloseStatus, reason []byte) (int, error) {
+	c.m.Lock()
+
+	cbuf := c.p.Get().(*wbuf)
+
+	defer func() {
+		// call the callback to close the connection and remove it from epoll
+		c.q(c, nil)
+		c.p.Put(cbuf)
+		c.m.Unlock()
+	}()
+
+	// mark the connection as closed
+	c.c = true
+
+	// flush all data and before sending the close frame
+	if c.b != nil {
+		if c.b.b.Len() > 0 {
+			n, err := c.b.b.WriteTo(c.Conn)
+			if err != nil {
+				return int(n), err
+			}
+		}
+	}
+
+	// write directly to the underlying connection
+	binary.BigEndian.PutUint16(cbuf.s[:], uint16(status))
+
+	n, err := cbuf.b.Write(c.b.s[:])
+	if err != nil {
+		return int(n), err
+	}
+
+	n, err = cbuf.b.Write(reason)
+	if err != nil {
+		return int(n), err
+	}
+
+	w, err := c.b.b.WriteTo(c.Conn)
+	return int(w), err
 }
 
 func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, error)) (int, error) {
@@ -128,7 +173,7 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, erro
 			if err != nil {
 				// mark the connection as closed and call the error callback
 				c.c = true
-				c.e(c, err)
+				c.q(c, err)
 			}
 		})
 	}

@@ -178,7 +178,7 @@ func (s *Server) Serve(port int) error {
 
 						if events[i].Events&unix.POLLHUP > 0 {
 							// this is a disconnect event
-							s.disconnect(pid, fd, int(events[i].Fd), cn, nil)
+							s.disconnect(pid, fd, int(events[i].Fd), cn, io.EOF)
 						}
 
 						// reset the buffers and read a completed
@@ -187,12 +187,6 @@ func (s *Server) Serve(port int) error {
 						fb.Reset()
 
 						op, err := assembleFrames(cn, cd, rb, fb, s.readDeadline)
-						if err != nil {
-							s.disconnect(pid, fd, int(events[i].Fd), cn, err)
-							continue
-						}
-
-						err = cn.SetReadDeadline(time.Now().Add(s.readDeadline))
 						if err != nil {
 							s.disconnect(pid, fd, int(events[i].Fd), cn, err)
 							continue
@@ -228,6 +222,8 @@ func (s *Server) Serve(port int) error {
 								s.handler.OnText(cn, fb.String())
 							}
 						}
+
+						// TODO set last read time
 					}
 				}
 			}(pid, fd)
@@ -294,6 +290,7 @@ func (s *Server) Serve(port int) error {
 			ln, err := lc.Listen(context.Background(), "tcp", s.listeners[pid].http.Addr)
 			if err != nil {
 				s.error(err, true)
+				return
 			}
 
 			err = s.listeners[pid].http.Serve(ln)
@@ -318,9 +315,16 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) disconnect(pid, fd, cfd int, conn *Conn, err error) {
-	// ell epoll we don't need to monitor this connection anymore
-	err = unix.EpollCtl(fd, syscall.EPOLL_CTL_DEL, cfd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(cfd)})
+func (s *Server) close(pid, fd, cfd int, conn *Conn, status CloseStatus, reason []byte) {
+	_, err := conn.CloseWithReason(status, reason)
+	if err != nil {
+		s.error(err, false)
+	}
+}
+
+func (s *Server) disconnect(pid, fd, cfd int, conn *Conn, derr error) {
+	// tell epoll we don't need to monitor this connection anymore
+	err := unix.EpollCtl(fd, syscall.EPOLL_CTL_DEL, cfd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(cfd)})
 	if err != nil {
 		s.error(err, false)
 	}
@@ -337,7 +341,7 @@ func (s *Server) disconnect(pid, fd, cfd int, conn *Conn, err error) {
 	}
 
 	if s.handler.OnDisconnect != nil {
-		s.handler.OnDisconnect(conn, err)
+		s.handler.OnDisconnect(conn, derr)
 	}
 }
 
@@ -422,7 +426,7 @@ func acceptWs(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
 		return nil, err
 	}
 
-	return conn, nil
+	return conn, conn.SetDeadline(time.Time{})
 }
 
 func pingWs(cn net.Conn, wc *codec) error {
@@ -442,27 +446,32 @@ func pongWs(cn net.Conn, wc *codec) error {
 // assemble websocket frame(s) into a buffer
 func assembleFrames(cn net.Conn, rc *codec, rb *bufio.Reader, fb *bytes.Buffer, dl time.Duration) (opCode, error) {
 	var h header
-	var op opCode
+	var op *opCode
 	var err error
 
 	for !h.Fin {
 		err = cn.SetReadDeadline(time.Now().Add(dl))
 		if err != nil {
-			return op, err
+			return 0, err
 		}
 
 		h, err = rc.ReadHeader(rb)
 		if err != nil {
-			return op, err
+			return 0, err
 		}
 
-		if h.OpCode > opContinuation {
-			op = h.OpCode
+		if op == nil {
+			op = &h.OpCode
+		}
+
+		err = cn.SetReadDeadline(time.Now().Add(dl))
+		if err != nil {
+			return *op, err
 		}
 
 		_, err := io.CopyN(fb, rb, h.Length)
 		if err != nil {
-			return op, err
+			return *op, err
 		}
 
 		if h.Masked {
@@ -475,7 +484,7 @@ func assembleFrames(cn net.Conn, rc *codec, rb *bufio.Reader, fb *bytes.Buffer, 
 		}
 	}
 
-	return op, nil
+	return *op, nil
 }
 
 func connectionFd(conn net.Conn) (int, error) {

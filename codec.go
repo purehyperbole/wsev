@@ -39,6 +39,12 @@ const (
 	opPong         opCode = 0xa
 )
 
+type CloseStatus uint64
+
+const (
+	CloseStatusNormalClosure CloseStatus = 1000
+)
+
 // Header represents websocket frame header.
 // See https://tools.ietf.org/html/rfc6455#section-5.2
 type header struct {
