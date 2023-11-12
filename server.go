@@ -193,10 +193,20 @@ func (s *Server) Serve(port int) error {
 						}
 
 						switch op {
-						case opPong:
-							if s.handler.OnPong != nil {
-								s.handler.OnPong(cn)
+						case opText:
+							if s.handler.OnMessage != nil {
+								s.handler.OnMessage(cn, fb.Bytes())
+							} else if s.handler.OnText != nil {
+								s.handler.OnText(cn, fb.String())
 							}
+						case opBinary:
+							if s.handler.OnMessage != nil {
+								s.handler.OnMessage(cn, fb.Bytes())
+							} else if s.handler.OnBinary != nil {
+								s.handler.OnBinary(cn, fb.Bytes())
+							}
+						case opClose:
+							s.disconnect(pid, fd, int(events[i].Fd), cn, nil)
 						case opPing:
 							err = pongWs(cn.Conn, cd)
 							if err != nil {
@@ -207,19 +217,9 @@ func (s *Server) Serve(port int) error {
 							if s.handler.OnPing != nil {
 								s.handler.OnPing(cn)
 							}
-						case opClose:
-							s.disconnect(pid, fd, int(events[i].Fd), cn, nil)
-						case opBinary:
-							if s.handler.OnMessage != nil {
-								s.handler.OnMessage(cn, fb.Bytes())
-							} else if s.handler.OnBinary != nil {
-								s.handler.OnBinary(cn, fb.Bytes())
-							}
-						case opText:
-							if s.handler.OnMessage != nil {
-								s.handler.OnMessage(cn, fb.Bytes())
-							} else if s.handler.OnText != nil {
-								s.handler.OnText(cn, fb.String())
+						case opPong:
+							if s.handler.OnPong != nil {
+								s.handler.OnPong(cn)
 							}
 						}
 

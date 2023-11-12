@@ -42,7 +42,7 @@ func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, bufsize 
 // Write can be made to time out and return an error after a fixed
 // time limit; see SetDeadline and SetWriteDeadline.
 func (c *Conn) Write(b []byte) (int, error) {
-	return c.write(opText, len(b), func(buf *bytes.Buffer) (int, error) {
+	return c.write(opBinary, len(b), func(buf *bytes.Buffer) (int, error) {
 		return buf.Write(b)
 	})
 }
@@ -60,7 +60,7 @@ func (c *Conn) WriteText(s string) (int, error) {
 func (c *Conn) CloseWithReason(status CloseStatus, reason []byte) (int, error) {
 	c.m.Lock()
 
-	cbuf := c.p.Get().(*wbuf)
+	var cbuf *wbuf
 
 	defer func() {
 		// call the callback to close the connection and remove it from epoll
@@ -72,14 +72,11 @@ func (c *Conn) CloseWithReason(status CloseStatus, reason []byte) (int, error) {
 	// mark the connection as closed
 	c.c = true
 
-	// flush all data and before sending the close frame
 	if c.b != nil {
-		if c.b.b.Len() > 0 {
-			n, err := c.b.b.WriteTo(c.Conn)
-			if err != nil {
-				return int(n), err
-			}
-		}
+		cbuf = c.b
+	} else {
+		cbuf = c.p.Get().(*wbuf)
+		cbuf.b.Reset()
 	}
 
 	// write directly to the underlying connection
@@ -116,7 +113,7 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, erro
 
 	// write the ws header and data to the buffer
 	err := c.b.c.WriteHeader(c.b.b, header{
-		OpCode: opBinary,
+		OpCode: op,
 		Fin:    true,
 		Length: int64(size),
 	})
