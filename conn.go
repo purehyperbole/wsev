@@ -79,6 +79,15 @@ func (c *Conn) CloseWithReason(status CloseStatus, reason []byte) (int, error) {
 		cbuf.b.Reset()
 	}
 
+	err := c.b.c.WriteHeader(c.b.b, header{
+		OpCode: opClose,
+		Fin:    true,
+		Length: int64(len(reason) + 2),
+	})
+	if err != nil {
+		return 0, err
+	}
+
 	// write directly to the underlying connection
 	binary.BigEndian.PutUint16(cbuf.s[:], uint16(status))
 
