@@ -42,7 +42,20 @@ const (
 type CloseStatus uint64
 
 const (
-	CloseStatusNormalClosure CloseStatus = 1000
+	CloseStatusNormalClosure           CloseStatus = 1000
+	CloseStatusGoingAway               CloseStatus = 1001
+	CloseStatusProtocolError           CloseStatus = 1002
+	CloseStatusUnsupportedData         CloseStatus = 1003
+	CloseStatusNoStatusReceived        CloseStatus = 1005
+	CloseStatusAbnormalClosure         CloseStatus = 1006
+	CloseStatusInvalidFramePayloadData CloseStatus = 1007
+	CloseStatusPolicyViolation         CloseStatus = 1008
+	CloseStatusMessageTooBig           CloseStatus = 1009
+	CloseStatusMandatoryExtension      CloseStatus = 1010
+	CloseStatusInternalServerErr       CloseStatus = 1011
+	CloseStatusServiceRestart          CloseStatus = 1012
+	CloseStatusTryAgainLater           CloseStatus = 1013
+	CloseStatusTLSHandshake            CloseStatus = 1015
 )
 
 // Header represents websocket frame header.

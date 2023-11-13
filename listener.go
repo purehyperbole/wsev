@@ -187,7 +187,7 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 }
 
 // assemble websocket frame(s) into a buffer
-func (l *listener) assembleFrames(fd int, cn net.Conn) (opCode, error) {
+func (l *listener) assembleFrames(fd int, cn *Conn) (opCode, error) {
 	var h header
 	var op *opCode
 	var err error
@@ -234,12 +234,12 @@ func (l *listener) assembleFrames(fd int, cn net.Conn) (opCode, error) {
 	// back the close message to complete the
 	// close handshake
 	if *op == opClose {
-		err = l.codec.WriteHeader(cn, h)
+		err = l.codec.WriteHeader(cn.Conn, h)
 		if err != nil {
 			return *op, err
 		}
 
-		_, err := io.CopyN(cn, l.framebuf, int64(l.framebuf.Len()))
+		_, err := io.CopyN(cn.Conn, l.framebuf, 2)
 		if err != nil {
 			return *op, err
 		}
