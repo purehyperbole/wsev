@@ -180,6 +180,7 @@ func (l *listener) pongWs(cn *Conn) error {
 	hd, err := l.codec.BuildHeader(header{
 		OpCode: opPong,
 		Fin:    true,
+		Length: int64(l.framebuf.Len()),
 	})
 
 	if err != nil {
