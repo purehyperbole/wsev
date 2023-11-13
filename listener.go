@@ -3,7 +3,6 @@ package wsev
 import (
 	"bufio"
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -114,8 +113,7 @@ func (l *listener) handleEvents() {
 					l.handler.OnBinary(cn, l.framebuf.Bytes())
 				}
 			case opClose:
-				status := binary.BigEndian.Uint16(l.framebuf.Bytes())
-				_, err = cn.CloseWith(CloseStatus(status), nil)
+				_, err = cn.CloseWith(CloseStatusNormalClosure, nil)
 				if err != nil {
 					l.disconnect(int(events[i].Fd), cn, err)
 					continue
@@ -181,6 +179,11 @@ func (l *listener) close(conn *Conn, status CloseStatus, reason []byte) {
 func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	// tell epoll we don't need to monitor this connection anymore
 	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_DEL, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
+	if err != nil {
+		l.error(err, false)
+	}
+
+	err = unix.Shutdown(fd, unix.SHUT_RDWR)
 	if err != nil {
 		l.error(err, false)
 	}

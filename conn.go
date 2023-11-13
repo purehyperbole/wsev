@@ -6,6 +6,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // holds a write buffer and codec
@@ -100,11 +102,25 @@ func (c *Conn) CloseWith(status CloseStatus, reason []byte) (int, error) {
 
 	n, err = cbuf.b.Write(reason)
 	if err != nil {
-		return int(n), err
+		return n, err
 	}
 
 	w, err := cbuf.b.WriteTo(c.Conn)
-	return int(w), err
+	if err != nil {
+		return int(w), err
+	}
+
+	fd, err := connectionFd(c.Conn)
+	if err != nil {
+		return int(0), err
+	}
+
+	// we call this as calling conn.Close does not actually
+	// correctly shutdown the connection. We directly call
+	// shutdown() to signal to the client the connection
+	// is being closed. conn.Close does not send a tcp FIN
+	// or FIN ACK packet. possibly a bug?)
+	return int(w), unix.Shutdown(fd, unix.SHUT_RDWR)
 }
 
 func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, error)) (int, error) {
