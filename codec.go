@@ -170,6 +170,17 @@ func (c *codec) ReadHeader(r io.Reader) (h header, err error) {
 // WriteHeader writes header binary representation into w.
 // ported from gobwas/ws to support reuse of the allocated frame header
 func (c *codec) WriteHeader(w io.Writer, h header) error {
+	hd, err := c.BuildHeader(h)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(hd)
+
+	return err
+}
+
+func (c *codec) BuildHeader(h header) ([]byte, error) {
 	// reset the first byte
 	c.wbts[0] = 0
 
@@ -196,7 +207,7 @@ func (c *codec) WriteHeader(w io.Writer, h header) error {
 		n = 10
 
 	default:
-		return ErrHeaderLengthUnexpected
+		return nil, ErrHeaderLengthUnexpected
 	}
 
 	if h.Masked {
@@ -204,9 +215,7 @@ func (c *codec) WriteHeader(w io.Writer, h header) error {
 		n += copy(c.wbts[n:], h.Mask[:])
 	}
 
-	_, err := w.Write(c.wbts[:n])
-
-	return err
+	return c.wbts[:n], nil
 }
 
 // Cipher applies XOR cipher to the payload using mask.

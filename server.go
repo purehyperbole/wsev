@@ -300,20 +300,6 @@ func acceptWs(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
 	return conn, conn.SetDeadline(time.Time{})
 }
 
-func pingWs(cn net.Conn, wc *codec) error {
-	return wc.WriteHeader(cn, header{
-		OpCode: opPing,
-		Fin:    true,
-	})
-}
-
-func pongWs(cn net.Conn, wc *codec) error {
-	return wc.WriteHeader(cn, header{
-		OpCode: opPong,
-		Fin:    true,
-	})
-}
-
 func connectionFd(conn net.Conn) (int, error) {
 	fd, err := conn.(*net.TCPConn).File()
 	return int(fd.Fd()), err

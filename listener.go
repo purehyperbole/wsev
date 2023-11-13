@@ -119,7 +119,7 @@ func (l *listener) handleEvents() {
 					continue
 				}
 			case opPing:
-				err = pongWs(cn.Conn, l.codec)
+				err = l.pongWs(cn)
 				if err != nil {
 					l.disconnect(int(events[i].Fd), cn, err)
 					continue
@@ -174,6 +174,31 @@ func (l *listener) close(conn *Conn, status CloseStatus, reason []byte) {
 	if err != nil {
 		l.error(err, false)
 	}
+}
+
+func (l *listener) pongWs(cn *Conn) error {
+	hd, err := l.codec.BuildHeader(header{
+		OpCode: opPong,
+		Fin:    true,
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// create a temporary net buffer
+	// so we can make use of writev
+	// to send the header and ping
+	// payload in one syscall
+	b := net.Buffers{
+		hd,
+		l.framebuf.Bytes(),
+	}
+
+	// write directly to the connection
+	_, err = b.WriteTo(cn.Conn)
+
+	return err
 }
 
 func (l *listener) disconnect(fd int, conn *Conn, derr error) {
