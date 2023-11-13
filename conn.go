@@ -56,8 +56,8 @@ func (c *Conn) WriteText(s string) (int, error) {
 	})
 }
 
-// CloseWithReason writes
-func (c *Conn) CloseWithReason(status CloseStatus, reason []byte) (int, error) {
+// CloseWith closes a connection with a given status
+func (c *Conn) CloseWith(status CloseStatus, reason []byte) (int, error) {
 	c.m.Lock()
 
 	var cbuf *wbuf
@@ -68,6 +68,8 @@ func (c *Conn) CloseWithReason(status CloseStatus, reason []byte) (int, error) {
 		c.p.Put(cbuf)
 		c.m.Unlock()
 	}()
+
+	// TODO should flush existing state?
 
 	// mark the connection as closed
 	c.c = true

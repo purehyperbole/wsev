@@ -3,6 +3,7 @@ package wsev
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -92,6 +94,14 @@ func (l *listener) handleEvents() {
 
 			switch op {
 			case opText:
+				if !utf8.Valid(l.framebuf.Bytes()) {
+					_, err = cn.CloseWith(CloseStatusInvalidFramePayloadData, nil)
+					if err != nil {
+						l.disconnect(int(events[i].Fd), cn, err)
+						continue
+					}
+				}
+
 				if l.handler.OnMessage != nil {
 					l.handler.OnMessage(cn, l.framebuf.Bytes())
 				} else if l.handler.OnText != nil {
@@ -104,7 +114,12 @@ func (l *listener) handleEvents() {
 					l.handler.OnBinary(cn, l.framebuf.Bytes())
 				}
 			case opClose:
-				l.disconnect(int(events[i].Fd), cn, nil)
+				status := binary.BigEndian.Uint16(l.framebuf.Bytes())
+				_, err = cn.CloseWith(CloseStatus(status), nil)
+				if err != nil {
+					l.disconnect(int(events[i].Fd), cn, err)
+					continue
+				}
 			case opPing:
 				err = pongWs(cn.Conn, l.codec)
 				if err != nil {
@@ -157,7 +172,7 @@ func (l *listener) error(err error, isFatal bool) {
 }
 
 func (l *listener) close(conn *Conn, status CloseStatus, reason []byte) {
-	_, err := conn.CloseWithReason(status, reason)
+	_, err := conn.CloseWith(status, reason)
 	if err != nil {
 		l.error(err, false)
 	}
@@ -227,21 +242,6 @@ func (l *listener) assembleFrames(fd int, cn *Conn) (opCode, error) {
 				h.Mask,
 				0,
 			)
-		}
-	}
-
-	// close is a special case, we need to echo
-	// back the close message to complete the
-	// close handshake
-	if *op == opClose {
-		err = l.codec.WriteHeader(cn.Conn, h)
-		if err != nil {
-			return *op, err
-		}
-
-		_, err := io.CopyN(cn.Conn, l.framebuf, 2)
-		if err != nil {
-			return *op, err
 		}
 	}
 
