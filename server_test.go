@@ -459,7 +459,6 @@ func TestServerReceiveSmall(t *testing.T) {
 
 		_, err := conn.Write(data)
 		require.Nil(t, err)
-
 		require.Nil(t, timeout(msgchan, time.Millisecond*100))
 	}
 }

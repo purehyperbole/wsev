@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -25,6 +26,7 @@ type Conn struct {
 	m        sync.Mutex         // the write lock
 	f        time.Duration      // the time to flush the buffer after
 	l        int                // the size to flush the buffer after
+	n        int32              // set to 1 if there is continuation data we need to read later
 	s        bool               // is this connection scheduled to be flushed already?
 	c        bool               // is this connection closed after an error?
 	q        func(*Conn, error) // callback to call upon closing the connection
@@ -70,11 +72,16 @@ func (c *Conn) CloseWith(status CloseStatus, reason []byte, disconnect bool) (in
 		if disconnect {
 			c.q(c, nil)
 		}
-		c.p.Put(cbuf)
+		if cbuf != nil {
+			c.p.Put(cbuf)
+		}
 		c.m.Unlock()
 	}()
 
-	// TODO should flush existing state?
+	// our connection has already been closed by the flush timer
+	if c.c {
+		return -1, ErrConnectionAlreadyClosed
+	}
 
 	// mark the connection as closed
 	c.c = true
@@ -140,12 +147,16 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason []byte, disconnec
 		if disconnect {
 			c.q(c, nil)
 		}
-
 		if c.b != nil {
 			c.p.Put(c.b)
 		}
 		c.m.Unlock()
 	}()
+
+	// our connection has already been closed by the flush timer
+	if c.c {
+		return -1, ErrConnectionAlreadyClosed
+	}
 
 	// mark the connection as closed
 	c.c = true
@@ -273,4 +284,16 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, erro
 	}
 
 	return size, nil
+}
+
+func (c *Conn) continuation() opCode {
+	return opCode(atomic.LoadInt32(&c.n))
+}
+
+func (c *Conn) setContinuation(opCode opCode) bool {
+	return atomic.CompareAndSwapInt32(&c.n, 0, int32(opCode))
+}
+
+func (c *Conn) resetContinuation() {
+	atomic.StoreInt32(&c.n, 0)
 }

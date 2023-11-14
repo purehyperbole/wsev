@@ -69,6 +69,10 @@ type header struct {
 	Length int64
 }
 
+func (h *header) isControl() bool {
+	return h.OpCode == opClose || h.OpCode == opPing || h.OpCode == opPong
+}
+
 // Codec for use in reading and writing websocket frames
 type codec struct {
 	rbts []byte

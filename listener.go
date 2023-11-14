@@ -25,6 +25,7 @@ type listener struct {
 	bufpool       *sync.Pool    // connection buffer pool
 	readbuf       *bufio.Reader // read buffer
 	framebuf      *bytes.Buffer // frame buffer
+	messagebuf    *bytes.Buffer // message payload buffer
 	handler       *Handler      // handler
 	conns         sync.Map      // active connections
 	http          http.Server   // http listener
@@ -41,8 +42,11 @@ func newListener(epollFd int, handler *Handler, bufpool *sync.Pool, readDeadline
 		codec:         newCodec(),
 		readbuf:       bufio.NewReaderSize(nil, DefaultBufferSize),
 		framebuf:      bytes.NewBuffer(make([]byte, DefaultBufferSize)),
+		messagebuf:    bytes.NewBuffer(make([]byte, DefaultBufferSize)),
 		handler:       handler,
 	}
+
+	l.messagebuf.Reset()
 
 	go l.handleEvents()
 
@@ -103,9 +107,19 @@ func (l *listener) handleEvents() {
 }
 
 func (l *listener) read(fd int32, conn *Conn) error {
-	op, err := l.assembleFrames(int(fd), conn)
+	op, err := l.assembleFrame(int(fd), conn)
 	if err != nil {
 		if errors.Is(err, ErrRsvNotSupported) {
+			_, cerr := conn.CloseWith(CloseStatusProtocolError, nil, false)
+			if cerr != nil {
+				return cerr
+			}
+
+			// we've sent the close frame, wait for the client to respond
+			return nil
+		}
+
+		if errors.Is(err, ErrInvalidContinuation) {
 			_, cerr := conn.CloseImmediatelyWith(CloseStatusProtocolError, nil, false)
 			if cerr != nil {
 				return cerr
@@ -120,7 +134,7 @@ func (l *listener) read(fd int32, conn *Conn) error {
 
 	switch op {
 	case opText:
-		if !utf8.Valid(l.framebuf.Bytes()) {
+		if !utf8.Valid(l.messagebuf.Bytes()) {
 			_, err = conn.CloseWith(CloseStatusInvalidFramePayloadData, nil, false)
 			if err != nil {
 				return err
@@ -128,16 +142,18 @@ func (l *listener) read(fd int32, conn *Conn) error {
 		}
 
 		if l.handler.OnMessage != nil {
-			l.handler.OnMessage(conn, l.framebuf.Bytes())
+			l.handler.OnMessage(conn, l.messagebuf.Bytes())
 		} else if l.handler.OnText != nil {
-			l.handler.OnText(conn, l.framebuf.String())
+			l.handler.OnText(conn, l.messagebuf.String())
 		}
+		l.messagebuf.Reset()
 	case opBinary:
 		if l.handler.OnMessage != nil {
-			l.handler.OnMessage(conn, l.framebuf.Bytes())
+			l.handler.OnMessage(conn, l.messagebuf.Bytes())
 		} else if l.handler.OnBinary != nil {
-			l.handler.OnBinary(conn, l.framebuf.Bytes())
+			l.handler.OnBinary(conn, l.messagebuf.Bytes())
 		}
+		l.messagebuf.Reset()
 	case opClose:
 		_, err = conn.CloseWith(CloseStatusNormalClosure, nil, true)
 		return err
@@ -154,6 +170,8 @@ func (l *listener) read(fd int32, conn *Conn) error {
 		if l.handler.OnPong != nil {
 			l.handler.OnPong(conn)
 		}
+	case opContinuation:
+		return nil
 	default:
 		l.error(fmt.Errorf("unsupported op code: %d", op), false)
 		_, err = conn.CloseWith(CloseStatusProtocolError, nil, true)
@@ -163,55 +181,94 @@ func (l *listener) read(fd int32, conn *Conn) error {
 	return nil
 }
 
-// assemble websocket frame(s) into a buffer
-func (l *listener) assembleFrames(fd int, cn *Conn) (opCode, error) {
-	var h header
-	var op *opCode
-	var err error
-
+// reads a frame and outputs its payload into a frame, text or binary buffer
+func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 	l.framebuf.Reset()
 
-	for !h.Fin {
-		err = cn.SetReadDeadline(time.Now().Add(l.readDeadline))
-		if err != nil {
-			return 0, err
-		}
-
-		h, err = l.codec.ReadHeader(l.readbuf)
-		if err != nil {
-			return 0, err
-		}
-
-		if h.Rsv > 0 {
-			// we don't support rsv bits > 0
-			return 0, ErrRsvNotSupported
-		}
-
-		if op == nil {
-			op = &h.OpCode
-		}
-
-		err = cn.SetReadDeadline(time.Now().Add(l.readDeadline))
-		if err != nil {
-			return *op, err
-		}
-
-		_, err := io.CopyN(l.framebuf, l.readbuf, h.Length)
-		if err != nil {
-			return *op, err
-		}
-
-		if h.Masked {
-			// apply mask to frame we've just read
-			cipher(
-				l.framebuf.Bytes()[l.framebuf.Len()-int(h.Length):],
-				h.Mask,
-				0,
-			)
-		}
+	err := conn.SetReadDeadline(time.Now().Add(l.readDeadline))
+	if err != nil {
+		return 0, err
 	}
 
-	return *op, nil
+	h, err := l.codec.ReadHeader(l.readbuf)
+	if err != nil {
+		return 0, err
+	}
+
+	if h.Rsv > 0 {
+		// we don't support rsv bits > 0
+		return 0, ErrRsvNotSupported
+	}
+
+	if h.isControl() && !h.Fin {
+		// control frames cannot be fragmented
+		return 0, ErrInvalidContinuation
+	}
+
+	var buf *bytes.Buffer
+
+	switch h.OpCode {
+	case opText, opBinary:
+		// try to set a continuation op code
+		if !conn.setContinuation(h.OpCode) {
+			// if this is a text or binary message and not final
+			// and we coudln't set the op code for a continuation
+			// due to an existing cotinuation, fail
+			return 0, ErrInvalidContinuation
+		}
+
+		if !h.Fin {
+			// return this frame as a continuation
+			h.OpCode = opContinuation
+		} else {
+			// reset the continuation as this is a final frame
+			conn.resetContinuation()
+		}
+
+		buf = l.messagebuf
+	case opContinuation:
+		if conn.continuation() == 0 {
+			// we've received a continuation frame
+			// that was not started with a text or
+			// binary op frame, so fail
+			return 0, ErrInvalidContinuation
+		} else {
+			// select the message buffer to write the continuation
+			// payload into
+			buf = l.messagebuf
+
+			if h.Fin {
+				// we've reached the last continuation frame
+				// so reset the op code and give this header
+				// its real opcode
+				h.OpCode = conn.continuation()
+				conn.resetContinuation()
+			}
+		}
+	default:
+		buf = l.framebuf
+	}
+
+	err = conn.SetReadDeadline(time.Now().Add(l.readDeadline))
+	if err != nil {
+		return h.OpCode, err
+	}
+
+	_, err = io.CopyN(buf, l.readbuf, h.Length)
+	if err != nil {
+		return h.OpCode, err
+	}
+
+	if h.Masked {
+		// apply mask to frame we've just read
+		cipher(
+			buf.Bytes()[buf.Len()-int(h.Length):],
+			h.Mask,
+			0,
+		)
+	}
+
+	return h.OpCode, nil
 }
 
 func (l *listener) register(fd int, conn net.Conn) {
