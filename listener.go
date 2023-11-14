@@ -78,65 +78,136 @@ func (l *listener) handleEvents() {
 			}
 
 			cn := conn.(*Conn)
+			l.readbuf.Reset(cn)
 
 			if events[i].Events&unix.POLLHUP > 0 {
-				// this is a disconnect event
 				l.disconnect(int(events[i].Fd), cn, io.EOF)
 				continue
 			}
 
-			op, err := l.assembleFrames(int(events[i].Fd), cn)
-			if err != nil {
-				l.disconnect(int(events[i].Fd), cn, err)
-				continue
-			}
-
-			switch op {
-			case opText:
-				if !utf8.Valid(l.framebuf.Bytes()) {
-					_, err = cn.CloseWith(CloseStatusInvalidFramePayloadData, nil)
-					if err != nil {
-						l.disconnect(int(events[i].Fd), cn, err)
-						continue
-					}
-				}
-
-				if l.handler.OnMessage != nil {
-					l.handler.OnMessage(cn, l.framebuf.Bytes())
-				} else if l.handler.OnText != nil {
-					l.handler.OnText(cn, l.framebuf.String())
-				}
-			case opBinary:
-				if l.handler.OnMessage != nil {
-					l.handler.OnMessage(cn, l.framebuf.Bytes())
-				} else if l.handler.OnBinary != nil {
-					l.handler.OnBinary(cn, l.framebuf.Bytes())
-				}
-			case opClose:
-				_, err = cn.CloseWith(CloseStatusNormalClosure, nil)
+			// read until there is no more data in the read buffer
+			for {
+				err = l.read(events[i].Fd, cn)
 				if err != nil {
 					l.disconnect(int(events[i].Fd), cn, err)
-					continue
-				}
-			case opPing:
-				err = l.pongWs(cn)
-				if err != nil {
-					l.disconnect(int(events[i].Fd), cn, err)
-					continue
+					break
 				}
 
-				if l.handler.OnPing != nil {
-					l.handler.OnPing(cn)
-				}
-			case opPong:
-				if l.handler.OnPong != nil {
-					l.handler.OnPong(cn)
+				if l.readbuf.Buffered() < 1 {
+					break
 				}
 			}
-
 			// TODO set last read time
 		}
 	}
+}
+
+func (l *listener) read(fd int32, conn *Conn) error {
+	op, err := l.assembleFrames(int(fd), conn)
+	if err != nil {
+		if errors.Is(err, ErrRsvNotSupported) {
+			_, cerr := conn.CloseImmediatelyWith(CloseStatusProtocolError, nil, false)
+			if cerr != nil {
+				return cerr
+			}
+
+			// we've sent the close frame, wait for the client to respond
+			return nil
+		}
+
+		return err
+	}
+
+	switch op {
+	case opText:
+		if !utf8.Valid(l.framebuf.Bytes()) {
+			_, err = conn.CloseWith(CloseStatusInvalidFramePayloadData, nil, false)
+			if err != nil {
+				return err
+			}
+		}
+
+		if l.handler.OnMessage != nil {
+			l.handler.OnMessage(conn, l.framebuf.Bytes())
+		} else if l.handler.OnText != nil {
+			l.handler.OnText(conn, l.framebuf.String())
+		}
+	case opBinary:
+		if l.handler.OnMessage != nil {
+			l.handler.OnMessage(conn, l.framebuf.Bytes())
+		} else if l.handler.OnBinary != nil {
+			l.handler.OnBinary(conn, l.framebuf.Bytes())
+		}
+	case opClose:
+		_, err = conn.CloseWith(CloseStatusNormalClosure, nil, true)
+		return err
+	case opPing:
+		err = l.pongWs(conn)
+		if err != nil {
+			return err
+		}
+
+		if l.handler.OnPing != nil {
+			l.handler.OnPing(conn)
+		}
+	case opPong:
+		if l.handler.OnPong != nil {
+			l.handler.OnPong(conn)
+		}
+	}
+
+	return nil
+}
+
+// assemble websocket frame(s) into a buffer
+func (l *listener) assembleFrames(fd int, cn *Conn) (opCode, error) {
+	var h header
+	var op *opCode
+	var err error
+
+	l.framebuf.Reset()
+
+	for !h.Fin {
+		err = cn.SetReadDeadline(time.Now().Add(l.readDeadline))
+		if err != nil {
+			return 0, err
+		}
+
+		h, err = l.codec.ReadHeader(l.readbuf)
+		if err != nil {
+			return 0, err
+		}
+
+		if h.Rsv > 0 {
+			// we don't support rsv bits > 0
+			return 0, ErrRsvNotSupported
+		}
+
+		if op == nil {
+			op = &h.OpCode
+		}
+
+		err = cn.SetReadDeadline(time.Now().Add(l.readDeadline))
+		if err != nil {
+			return *op, err
+		}
+
+		_, err := io.CopyN(l.framebuf, l.readbuf, h.Length)
+		if err != nil {
+			return *op, err
+		}
+
+		if h.Masked {
+			// apply mask to frame we've just read
+			cipher(
+				l.framebuf.Bytes()[l.framebuf.Len()-int(h.Length):],
+				h.Mask,
+				0,
+			)
+		}
+	}
+
+	return *op, nil
 }
 
 func (l *listener) register(fd int, conn net.Conn) {
@@ -169,14 +240,12 @@ func (l *listener) error(err error, isFatal bool) {
 	}
 }
 
-func (l *listener) close(conn *Conn, status CloseStatus, reason []byte) {
-	_, err := conn.CloseWith(status, reason)
-	if err != nil {
-		l.error(err, false)
+func (l *listener) pongWs(conn *Conn) error {
+	if l.framebuf.Len() > 125 {
+		_, err := conn.CloseWith(CloseStatusProtocolError, nil, false)
+		return err
 	}
-}
 
-func (l *listener) pongWs(cn *Conn) error {
 	hd, err := l.codec.BuildHeader(header{
 		OpCode: opPong,
 		Fin:    true,
@@ -197,7 +266,7 @@ func (l *listener) pongWs(cn *Conn) error {
 	}
 
 	// write directly to the connection
-	_, err = b.WriteTo(cn.Conn)
+	_, err = b.WriteTo(conn.Conn)
 
 	return err
 }
@@ -205,11 +274,6 @@ func (l *listener) pongWs(cn *Conn) error {
 func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	// tell epoll we don't need to monitor this connection anymore
 	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_DEL, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
-	if err != nil {
-		l.error(err, false)
-	}
-
-	err = unix.Shutdown(fd, unix.SHUT_RDWR)
 	if err != nil {
 		l.error(err, false)
 	}
@@ -228,51 +292,4 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	if l.handler.OnDisconnect != nil {
 		l.handler.OnDisconnect(conn, derr)
 	}
-}
-
-// assemble websocket frame(s) into a buffer
-func (l *listener) assembleFrames(fd int, cn *Conn) (opCode, error) {
-	var h header
-	var op *opCode
-	var err error
-
-	l.framebuf.Reset()
-	l.readbuf.Reset(cn)
-
-	for !h.Fin {
-		err = cn.SetReadDeadline(time.Now().Add(l.readDeadline))
-		if err != nil {
-			return 0, err
-		}
-
-		h, err = l.codec.ReadHeader(l.readbuf)
-		if err != nil {
-			return 0, err
-		}
-
-		if op == nil {
-			op = &h.OpCode
-		}
-
-		err = cn.SetReadDeadline(time.Now().Add(l.readDeadline))
-		if err != nil {
-			return *op, err
-		}
-
-		_, err := io.CopyN(l.framebuf, l.readbuf, h.Length)
-		if err != nil {
-			return *op, err
-		}
-
-		if h.Masked {
-			// apply mask to frame we've just read
-			cipher(
-				l.framebuf.Bytes()[l.framebuf.Len()-int(h.Length):],
-				h.Mask,
-				0,
-			)
-		}
-	}
-
-	return *op, nil
 }

@@ -58,15 +58,18 @@ func (c *Conn) WriteText(s string) (int, error) {
 	})
 }
 
-// CloseWith closes a connection with a given status
-func (c *Conn) CloseWith(status CloseStatus, reason []byte) (int, error) {
+// CloseWith writes all existing buffered state and sends close frame to the connection.
+// if disconnect is specified as true, the underlying connection will be closed immediately
+func (c *Conn) CloseWith(status CloseStatus, reason []byte, disconnect bool) (int, error) {
 	c.m.Lock()
 
 	var cbuf *wbuf
 
 	defer func() {
-		// call the callback to close the connection and remove it from epoll
-		c.q(c, nil)
+		// call the callback to close the connection and remove it from epoll, if we are disconnecting
+		if disconnect {
+			c.q(c, nil)
+		}
 		c.p.Put(cbuf)
 		c.m.Unlock()
 	}()
@@ -115,12 +118,79 @@ func (c *Conn) CloseWith(status CloseStatus, reason []byte) (int, error) {
 		return int(0), err
 	}
 
-	// we call this as calling conn.Close does not actually
-	// correctly shutdown the connection. We directly call
-	// shutdown() to signal to the client the connection
-	// is being closed. conn.Close does not send a tcp FIN
-	// or FIN ACK packet. possibly a bug?)
-	return int(w), unix.Shutdown(fd, unix.SHUT_RDWR)
+	if disconnect {
+		// we call this as calling conn.Close does not actually
+		// correctly shutdown the connection. We directly call
+		// shutdown() to signal to the client the connection
+		// is being closed. conn.Close does not send a tcp FIN
+		// or FIN ACK packet. possibly a bug?)
+		return int(n), unix.Shutdown(fd, unix.SHUT_RDWR)
+	}
+
+	return 0, nil
+}
+
+// CloseImmediatelyWith sends close frame to the connection immediately, discarding any buffered state.
+// if disconnect is specified as true, the underlying connection will be closed immediately
+func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason []byte, disconnect bool) (int, error) {
+	c.m.Lock()
+
+	defer func() {
+		// call the callback to close the connection and remove it from epoll, if we are disconnecting
+		if disconnect {
+			c.q(c, nil)
+		}
+
+		if c.b != nil {
+			c.p.Put(c.b)
+		}
+		c.m.Unlock()
+	}()
+
+	// mark the connection as closed
+	c.c = true
+
+	hd, err := newWriteCodec().BuildHeader(header{
+		OpCode: opClose,
+		Fin:    true,
+		Length: int64(len(reason) + 2),
+	})
+
+	if err != nil {
+		return 0, err
+	}
+
+	payload := make([]byte, len(reason)+2)
+
+	// write directly to the underlying connection
+	binary.BigEndian.PutUint16(payload, uint16(status))
+	copy(payload[2:], reason)
+
+	b := net.Buffers{
+		hd,
+		payload,
+	}
+
+	n, err := b.WriteTo(c.Conn)
+	if err != nil {
+		return int(n), err
+	}
+
+	fd, err := connectionFd(c.Conn)
+	if err != nil {
+		return int(0), err
+	}
+
+	if disconnect {
+		// we call this as calling conn.Close does not actually
+		// correctly shutdown the connection. We directly call
+		// shutdown() to signal to the client the connection
+		// is being closed. conn.Close does not send a tcp FIN
+		// or FIN ACK packet. possibly a bug?)
+		return int(n), unix.Shutdown(fd, unix.SHUT_RDWR)
+	}
+
+	return 0, nil
 }
 
 func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, error)) (int, error) {
