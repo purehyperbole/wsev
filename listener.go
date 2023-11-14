@@ -3,6 +3,7 @@ package wsev
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -155,8 +156,7 @@ func (l *listener) read(fd int32, conn *Conn) error {
 		}
 		l.messagebuf.Reset()
 	case opClose:
-		_, err = conn.CloseWith(CloseStatusNormalClosure, nil, true)
-		return err
+		return l.closeWs(conn)
 	case opPing:
 		err = l.pongWs(conn)
 		if err != nil {
@@ -299,6 +299,26 @@ func (l *listener) error(err error, isFatal bool) {
 	if l.handler.OnError != nil {
 		l.handler.OnError(err, isFatal)
 	}
+}
+
+func (l *listener) closeWs(conn *Conn) error {
+	cs := CloseStatusNormalClosure
+
+	if l.framebuf.Len() == 1 || l.framebuf.Len() > 125 {
+		cs = CloseStatusProtocolError
+	} else if l.framebuf.Len() >= 2 {
+		_, valid := validCloseStatus[CloseStatus(binary.BigEndian.Uint16(l.framebuf.Bytes()[:2]))]
+		if !valid {
+			cs = CloseStatusProtocolError
+		}
+
+		if !utf8.Valid(l.framebuf.Bytes()[2:]) {
+			cs = CloseStatusInvalidFramePayloadData
+		}
+	}
+
+	_, err := conn.CloseWith(cs, nil, true)
+	return err
 }
 
 func (l *listener) pongWs(conn *Conn) error {

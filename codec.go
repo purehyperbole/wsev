@@ -58,6 +58,27 @@ const (
 	CloseStatusTLSHandshake            CloseStatus = 1015
 )
 
+var validCloseStatus = map[CloseStatus]struct{}{
+	CloseStatusNormalClosure:           struct{}{},
+	CloseStatusGoingAway:               struct{}{},
+	CloseStatusProtocolError:           struct{}{},
+	CloseStatusUnsupportedData:         struct{}{},
+	CloseStatusInvalidFramePayloadData: struct{}{},
+	CloseStatusPolicyViolation:         struct{}{},
+	CloseStatusMessageTooBig:           struct{}{},
+	CloseStatusMandatoryExtension:      struct{}{},
+	CloseStatusInternalServerErr:       struct{}{},
+	CloseStatusServiceRestart:          struct{}{},
+	CloseStatusTryAgainLater:           struct{}{},
+	CloseStatusTLSHandshake:            struct{}{},
+}
+
+func init() {
+	for cs := CloseStatus(3000); cs < CloseStatus(5000); cs++ {
+		validCloseStatus[cs] = struct{}{}
+	}
+}
+
 // Header represents websocket frame header.
 // See https://tools.ietf.org/html/rfc6455#section-5.2
 type header struct {
