@@ -154,6 +154,10 @@ func (l *listener) read(fd int32, conn *Conn) error {
 		if l.handler.OnPong != nil {
 			l.handler.OnPong(conn)
 		}
+	default:
+		l.error(fmt.Errorf("unsupported op code: %d", op), false)
+		_, err = conn.CloseWith(CloseStatusProtocolError, nil, true)
+		return err
 	}
 
 	return nil
