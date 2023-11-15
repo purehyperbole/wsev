@@ -5,10 +5,16 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -605,6 +611,92 @@ func TestServerReceiveMasked(t *testing.T) {
 	}
 }
 
+func TestServerAutobahn(t *testing.T) {
+	if os.Getenv("AUTOBAHN") != "1" {
+		t.Skip("skipping autobahn testsuite")
+	}
+
+	h := &Handler{
+		OnBinary: func(conn *Conn, msg []byte) {
+			conn.Write(msg)
+		},
+		OnText: func(conn *Conn, msg string) {
+			conn.WriteText(msg)
+		},
+		OnError: func(err error, fatal bool) {
+			require.False(t, fatal)
+		},
+	}
+
+	// start echo server
+	err := New(
+		h,
+		WithReadDeadline(time.Second),
+		WithWriteBufferDeadline(time.Duration(time.Millisecond)),
+	).Serve(8000)
+
+	require.Nil(t, err)
+
+	// write config to tempdir
+	workdir := randomdir()
+	fmt.Println("outputting to", workdir)
+	err = os.Mkdir(filepath.Join(workdir, "config"), 0755)
+	fmt.Println(err)
+	os.Mkdir(filepath.Join(workdir, "reports"), 0755)
+
+	config, _ := json.Marshal(map[string]interface{}{
+		"outdir": "./reports/servers",
+		"servers": []map[string]interface{}{
+			{
+				"url": "ws://127.0.0.1:8000",
+			},
+		},
+		"cases":         []string{"*"},
+		"exclude-cases": []string{"12.*", "13.*"},
+	})
+
+	err = os.WriteFile(filepath.Join(workdir, "config", "fuzzingclient.json"), config, 0644)
+	require.Nil(t, err)
+
+	// run autobahn testsuite container
+	cmd := exec.Command(
+		"docker",
+		"run",
+		"-t",
+		"--rm",
+		"--network=host",
+		"-v",
+		fmt.Sprintf("%s:/config", filepath.Join(workdir, "config")),
+		"-v",
+		fmt.Sprintf("%s:/reports", filepath.Join(workdir, "reports")),
+		"crossbario/autobahn-testsuite",
+		"wstest",
+		"-m",
+		"fuzzingclient",
+		"-s",
+		"/config/fuzzingclient.json",
+	)
+
+	stdout, err := cmd.StdoutPipe()
+	require.Nil(t, err)
+	output := bufio.NewScanner(stdout)
+
+	err = cmd.Start()
+	require.Nil(t, err)
+
+	for output.Scan() {
+		// TODO detect test case and check report json
+		if strings.HasPrefix(output.Text(), "Running test case ID") {
+			testcase := strings.Split(output.Text(), " ")[4]
+			t.Run(testcase, func(t *testing.T) {
+			})
+		}
+	}
+
+	err = cmd.Wait()
+	require.Nil(t, err)
+}
+
 func timeout[T any](ch chan T, after time.Duration) error {
 	select {
 	case <-ch:
@@ -621,4 +713,12 @@ func timeoutValue[T any](ch chan T, after time.Duration) (*T, error) {
 	case <-time.After(after):
 		return nil, errors.New("timeout")
 	}
+}
+
+func randomdir() string {
+	random := make([]byte, 10)
+	rand.Read(random)
+	dir := filepath.Join("/tmp", hex.EncodeToString(random))
+	os.Mkdir(dir, 0755)
+	return dir
 }

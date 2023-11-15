@@ -8,7 +8,9 @@ Some parts for reading and writing websocket headers have been derrvied from the
 
 - [x] Epoll based websocket handler
 - [x] SO_REUSEPORT for multiple epoll listeners on the same port
-- [x] pooled buffer reuse
+- [x] Pooled write buffers for efficient memory usage
+- [x] Passes the [autobahn testsuite](https://github.com/crossbario/autobahn-testsuite)
+- [ ] Detect connection timeouts
 
 ## Setup
 
@@ -52,6 +54,7 @@ func main() {
     // as determined by GOMAXPROCS
     err := wsev.New(
         h, 
+        // 
         // the deadline that will be set when reading from sockets that have data
         wsev.WithReadDeadline(time.Millisecond*100),
         // the deadline that data will be flushed to the underlying connection 
@@ -144,4 +147,10 @@ Running tests:
 
 ```go
 go test -v -race
+```
+
+Running with autobahn testsuite (requires [Docker](https://www.docker.com/))
+
+```go
+AUTOBAHN=1 go test -v -race
 ```
