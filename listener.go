@@ -162,13 +162,14 @@ func (l *listener) handleEvents() {
 func (l *listener) read(fd int32, conn *Conn) error {
 	op, err := l.assembleFrame(int(fd), conn)
 	if err != nil {
-		if conn.closed() {
-			return nil
-		}
-
 		ce, ok := err.(*closeError)
 		if !ok {
 			return err
+		}
+
+		if conn.closed() {
+			// we've already sent a closing handshake
+			return nil
 		}
 
 		if ce.immediate {
@@ -338,7 +339,7 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 	// validate the payload
 	switch h.OpCode {
 	case opClose:
-		if l.framebuf.Len() > 2 {
+		if l.framebuf.Len() >= 2 {
 			code := CloseStatus(binary.BigEndian.Uint16(l.framebuf.Bytes()[:2]))
 
 			_, valid := validCloseStatus[code]
@@ -351,7 +352,7 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 			}
 		}
 	case opText:
-		if !utf8.Valid(l.messagebuf.Bytes()) {
+		if !utf8.Valid(buf.Bytes()[buf.Len()-int(h.Length):]) {
 			return 0, ErrInvalidPayloadEncoding
 		}
 	}
