@@ -20,12 +20,8 @@ import (
 )
 
 var (
-	ErrConnectionAlreadyClosed = errors.New("connection has already been closed due to an error")
-	ErrRsvNotSupported         = errors.New("frame rsv bits set recevied")
-	ErrInvalidContinuation     = errors.New("invalid op code continuation")
-	errCloseFrameRecevied      = errors.New("close frame recevied")
-	wsAcceptID                 = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
-	enc                        = base64.StdEncoding
+	wsAcceptID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+	enc        = base64.StdEncoding
 )
 
 const (

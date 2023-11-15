@@ -27,8 +27,8 @@ type Conn struct {
 	f        time.Duration      // the time to flush the buffer after
 	l        int                // the size to flush the buffer after
 	n        int32              // set to 1 if there is continuation data we need to read later
+	c        int32              // is this connection closed after an error?
 	s        bool               // is this connection scheduled to be flushed already?
-	c        bool               // is this connection closed after an error?
 	q        func(*Conn, error) // callback to call upon closing the connection
 }
 
@@ -62,84 +62,7 @@ func (c *Conn) WriteText(s string) (int, error) {
 
 // CloseWith writes all existing buffered state and sends close frame to the connection.
 // if disconnect is specified as true, the underlying connection will be closed immediately
-func (c *Conn) CloseWith(status CloseStatus, reason []byte, disconnect bool) (int, error) {
-	c.m.Lock()
-
-	var cbuf *wbuf
-
-	defer func() {
-		// call the callback to close the connection and remove it from epoll, if we are disconnecting
-		if disconnect {
-			c.q(c, nil)
-		}
-		if cbuf != nil {
-			c.p.Put(cbuf)
-		}
-		c.m.Unlock()
-	}()
-
-	// our connection has already been closed by the flush timer
-	if c.c {
-		return -1, ErrConnectionAlreadyClosed
-	}
-
-	// mark the connection as closed
-	c.c = true
-
-	if c.b != nil {
-		cbuf = c.b
-	} else {
-		cbuf = c.p.Get().(*wbuf)
-		cbuf.b.Reset()
-	}
-
-	err := cbuf.c.WriteHeader(cbuf.b, header{
-		OpCode: opClose,
-		Fin:    true,
-		Length: int64(len(reason) + 2),
-	})
-	if err != nil {
-		return 0, err
-	}
-
-	// write directly to the underlying connection
-	binary.BigEndian.PutUint16(cbuf.s[:], uint16(status))
-
-	n, err := cbuf.b.Write(cbuf.s[:])
-	if err != nil {
-		return int(n), err
-	}
-
-	n, err = cbuf.b.Write(reason)
-	if err != nil {
-		return n, err
-	}
-
-	w, err := cbuf.b.WriteTo(c.Conn)
-	if err != nil {
-		return int(w), err
-	}
-
-	fd, err := connectionFd(c.Conn)
-	if err != nil {
-		return int(0), err
-	}
-
-	if disconnect {
-		// we call this as calling conn.Close does not actually
-		// correctly shutdown the connection. We directly call
-		// shutdown() to signal to the client the connection
-		// is being closed. conn.Close does not send a tcp FIN
-		// or FIN ACK packet. possibly a bug?)
-		return int(n), unix.Shutdown(fd, unix.SHUT_RDWR)
-	}
-
-	return 0, nil
-}
-
-// CloseImmediatelyWith sends close frame to the connection immediately, discarding any buffered state.
-// if disconnect is specified as true, the underlying connection will be closed immediately
-func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason []byte, disconnect bool) (int, error) {
+func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) error {
 	c.m.Lock()
 
 	defer func() {
@@ -153,13 +76,83 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason []byte, disconnec
 		c.m.Unlock()
 	}()
 
-	// our connection has already been closed by the flush timer
-	if c.c {
-		return -1, ErrConnectionAlreadyClosed
+	// try to mark our connection as closed
+	if !c.close() {
+		return ErrConnectionAlreadyClosed
 	}
 
-	// mark the connection as closed
-	c.c = true
+	// if we don't have a write buffer, then get one from the pool
+	if c.b == nil {
+		c.b = c.p.Get().(*wbuf)
+		c.b.b.Reset()
+	}
+
+	err := c.b.c.WriteHeader(c.b.b, header{
+		OpCode: opClose,
+		Fin:    true,
+		Length: int64(len(reason) + 2),
+	})
+	if err != nil {
+		return err
+	}
+
+	// write directly to the underlying connection
+	binary.BigEndian.PutUint16(c.b.s[:], uint16(status))
+
+	_, err = c.b.b.Write(c.b.s[:])
+	if err != nil {
+		return err
+	}
+
+	_, err = c.b.b.WriteString(reason)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.b.b.WriteTo(c.Conn)
+	if err != nil {
+		return err
+	}
+
+	if disconnect {
+		// we call this as calling conn.Close does not actually
+		// correctly shutdown the connection. We directly call
+		// shutdown() to signal to the client the connection
+		// is being closed. conn.Close does not send a tcp FIN
+		// or FIN ACK packet. possibly a bug?)
+		fd, err := connectionFd(c.Conn)
+		if err != nil {
+			return err
+		}
+
+		return unix.Shutdown(fd, unix.SHUT_RDWR)
+	}
+
+	return nil
+}
+
+// CloseImmediatelyWith sends close frame to the connection immediately, discarding any buffered state.
+// if disconnect is specified as true, the underlying connection will be closed immediately
+func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnect bool) error {
+	c.m.Lock()
+
+	defer func() {
+		// call the callback to close the connection and remove it from epoll, if we are disconnecting
+		if disconnect {
+			c.q(c, nil)
+		}
+		// return the buffer and remove it from this connection
+		if c.b != nil {
+			c.p.Put(c.b)
+			c.b = nil
+		}
+		c.m.Unlock()
+	}()
+
+	// try to mark our connection as closed
+	if !c.close() {
+		return ErrConnectionAlreadyClosed
+	}
 
 	hd, err := newWriteCodec().BuildHeader(header{
 		OpCode: opClose,
@@ -168,7 +161,7 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason []byte, disconnec
 	})
 
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	payload := make([]byte, len(reason)+2)
@@ -182,14 +175,9 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason []byte, disconnec
 		payload,
 	}
 
-	n, err := b.WriteTo(c.Conn)
+	_, err = b.WriteTo(c.Conn)
 	if err != nil {
-		return int(n), err
-	}
-
-	fd, err := connectionFd(c.Conn)
-	if err != nil {
-		return int(0), err
+		return err
 	}
 
 	if disconnect {
@@ -198,19 +186,24 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason []byte, disconnec
 		// shutdown() to signal to the client the connection
 		// is being closed. conn.Close does not send a tcp FIN
 		// or FIN ACK packet. possibly a bug?)
-		return int(n), unix.Shutdown(fd, unix.SHUT_RDWR)
+		fd, err := connectionFd(c.Conn)
+		if err != nil {
+			return err
+		}
+
+		return unix.Shutdown(fd, unix.SHUT_RDWR)
 	}
 
-	return 0, nil
+	return nil
 }
 
 func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, error)) (int, error) {
 	c.m.Lock()
 	defer c.m.Unlock()
 
-	// our connection has already been closed by the flush timer
-	if c.c {
-		return -1, ErrConnectionAlreadyClosed
+	// try to mark our connection as closed
+	if c.closed() {
+		return 0, ErrConnectionAlreadyClosed
 	}
 
 	// if we don't have a write buffer, then get one from the pool
@@ -277,7 +270,7 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, erro
 			_, err := c.b.b.WriteTo(c.Conn)
 			if err != nil {
 				// mark the connection as closed and call the error callback
-				c.c = true
+				c.close()
 				c.q(c, err)
 			}
 		})
@@ -296,4 +289,12 @@ func (c *Conn) setContinuation(opCode opCode) bool {
 
 func (c *Conn) resetContinuation() {
 	atomic.StoreInt32(&c.n, 0)
+}
+
+func (c *Conn) closed() bool {
+	return atomic.LoadInt32(&c.c) == 1
+}
+
+func (c *Conn) close() bool {
+	return atomic.CompareAndSwapInt32(&c.c, 0, 1)
 }

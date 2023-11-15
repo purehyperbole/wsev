@@ -94,6 +94,10 @@ func (h *header) isControl() bool {
 	return h.OpCode == opClose || h.OpCode == opPing || h.OpCode == opPong
 }
 
+func (h *header) isReserved() bool {
+	return h.OpCode != opContinuation && h.OpCode != opText && h.OpCode != opBinary && h.OpCode != opClose && h.OpCode != opPing && h.OpCode != opPong
+}
+
 // Codec for use in reading and writing websocket frames
 type codec struct {
 	rbts []byte

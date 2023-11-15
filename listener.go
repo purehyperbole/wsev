@@ -17,6 +17,58 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+type closeError struct {
+	Status    CloseStatus
+	Reason    string
+	immediate bool
+	shutdown  bool
+}
+
+func (e *closeError) Error() string {
+	return e.Reason
+}
+
+var (
+	ErrConnectionAlreadyClosed       = errors.New("connection already closed")
+	ErrInvalidRSVBits          error = &closeError{
+		Status: CloseStatusProtocolError,
+		Reason: "non-zero rsv bits not supported",
+		// immediate: true,
+	}
+	ErrInvalidOpCode error = &closeError{
+		Status: CloseStatusProtocolError,
+		Reason: "invalid or reserved op code",
+		// immediate: true,
+	}
+	ErrInvalidContinuation error = &closeError{
+		Status: CloseStatusProtocolError,
+		Reason: "invalid continuation",
+	}
+	ErrInvalidPayloadEncoding error = &closeError{
+		Status:    CloseStatusInvalidFramePayloadData,
+		Reason:    "close frame reason invalid",
+		immediate: true,
+	}
+	ErrInvalidControlLength error = &closeError{
+		Status:    CloseStatusProtocolError,
+		Reason:    "control frame payload exceeds 125 bytes",
+		immediate: true,
+		shutdown:  true,
+	}
+	ErrInvalidCloseReason error = &closeError{
+		Status:    CloseStatusProtocolError,
+		Reason:    "close frame reason invalid",
+		immediate: true,
+		shutdown:  true,
+	}
+	ErrInvalidCloseEncoding error = &closeError{
+		Status:    CloseStatusInvalidFramePayloadData,
+		Reason:    "close frame reason invalid",
+		immediate: true,
+		shutdown:  true,
+	}
+)
+
 type listener struct {
 	fd            int           // epoll file descriptor
 	readDeadline  time.Duration // read deadline
@@ -110,36 +162,31 @@ func (l *listener) handleEvents() {
 func (l *listener) read(fd int32, conn *Conn) error {
 	op, err := l.assembleFrame(int(fd), conn)
 	if err != nil {
-		if errors.Is(err, ErrRsvNotSupported) {
-			_, cerr := conn.CloseWith(CloseStatusProtocolError, nil, false)
-			if cerr != nil {
-				return cerr
-			}
-
-			// we've sent the close frame, wait for the client to respond
+		if conn.closed() {
 			return nil
 		}
 
-		if errors.Is(err, ErrInvalidContinuation) {
-			_, cerr := conn.CloseImmediatelyWith(CloseStatusProtocolError, nil, false)
-			if cerr != nil {
-				return cerr
-			}
-
-			// we've sent the close frame, wait for the client to respond
-			return nil
+		ce, ok := err.(*closeError)
+		if !ok {
+			return err
 		}
 
-		return err
+		if ce.immediate {
+			return conn.CloseImmediatelyWith(ce.Status, ce.Reason, ce.shutdown)
+		}
+
+		return conn.CloseWith(ce.Status, ce.Reason, ce.shutdown)
+	}
+
+	if conn.closed() && op != opClose {
+		// if we have a non-close frame after we have started the closing handshake, skip it
+		return nil
 	}
 
 	switch op {
 	case opText:
 		if !utf8.Valid(l.messagebuf.Bytes()) {
-			_, err = conn.CloseWith(CloseStatusInvalidFramePayloadData, nil, false)
-			if err != nil {
-				return err
-			}
+			return conn.CloseWith(CloseStatusInvalidFramePayloadData, "invalid utf8 payload", false)
 		}
 
 		if l.handler.OnMessage != nil {
@@ -147,17 +194,23 @@ func (l *listener) read(fd int32, conn *Conn) error {
 		} else if l.handler.OnText != nil {
 			l.handler.OnText(conn, l.messagebuf.String())
 		}
-		l.messagebuf.Reset()
 	case opBinary:
 		if l.handler.OnMessage != nil {
 			l.handler.OnMessage(conn, l.messagebuf.Bytes())
 		} else if l.handler.OnBinary != nil {
 			l.handler.OnBinary(conn, l.messagebuf.Bytes())
 		}
-		l.messagebuf.Reset()
 	case opClose:
-		return l.closeWs(conn)
+		if conn.closed() {
+			return unix.Shutdown(int(fd), unix.SHUT_RDWR)
+		} else {
+			return conn.CloseWith(CloseStatusNormalClosure, "normal closure", true)
+		}
 	case opPing:
+		if conn.closed() {
+			return nil
+		}
+
 		err = l.pongWs(conn)
 		if err != nil {
 			return err
@@ -172,10 +225,6 @@ func (l *listener) read(fd int32, conn *Conn) error {
 		}
 	case opContinuation:
 		return nil
-	default:
-		l.error(fmt.Errorf("unsupported op code: %d", op), false)
-		_, err = conn.CloseWith(CloseStatusProtocolError, nil, true)
-		return err
 	}
 
 	return nil
@@ -195,26 +244,49 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 		return 0, err
 	}
 
-	if h.Rsv > 0 {
-		// we don't support rsv bits > 0
-		return 0, ErrRsvNotSupported
+	err = conn.SetReadDeadline(time.Now().Add(l.readDeadline))
+	if err != nil {
+		return h.OpCode, err
 	}
 
-	if h.isControl() && !h.Fin {
-		// control frames cannot be fragmented
-		return 0, ErrInvalidContinuation
+	// validate this frame after we have read data to avoid
+	// epoll waking us up again to read the remaining bytes
+	if h.Rsv > 0 {
+		// we don't support rsv bits > 0
+		return 0, l.discard(conn, h.Length, ErrInvalidRSVBits)
+	}
+
+	if h.isReserved() {
+		// reserved op code used
+		return 0, l.discard(conn, h.Length, ErrInvalidOpCode)
+	}
+
+	if h.isControl() {
+		if !h.Fin {
+			// control frames cannot be fragmented
+			return 0, l.discard(conn, h.Length, ErrInvalidContinuation)
+		}
+		if h.Length > 125 {
+			// control frames cannot have payloads over 125 bytes
+			return 0, l.discard(conn, h.Length, ErrInvalidControlLength)
+		}
+		if h.OpCode == opClose && h.Length == 1 {
+			return 0, l.discard(conn, h.Length, ErrInvalidCloseReason)
+		}
 	}
 
 	var buf *bytes.Buffer
 
 	switch h.OpCode {
 	case opText, opBinary:
+		l.messagebuf.Reset()
+
 		// try to set a continuation op code
 		if !conn.setContinuation(h.OpCode) {
 			// if this is a text or binary message and not final
 			// and we coudln't set the op code for a continuation
 			// due to an existing cotinuation, fail
-			return 0, ErrInvalidContinuation
+			return 0, l.discard(conn, h.Length, ErrInvalidContinuation)
 		}
 
 		if !h.Fin {
@@ -231,7 +303,7 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 			// we've received a continuation frame
 			// that was not started with a text or
 			// binary op frame, so fail
-			return 0, ErrInvalidContinuation
+			return 0, l.discard(conn, h.Length, ErrInvalidContinuation)
 		} else {
 			// select the message buffer to write the continuation
 			// payload into
@@ -249,11 +321,6 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 		buf = l.framebuf
 	}
 
-	err = conn.SetReadDeadline(time.Now().Add(l.readDeadline))
-	if err != nil {
-		return h.OpCode, err
-	}
-
 	_, err = io.CopyN(buf, l.readbuf, h.Length)
 	if err != nil {
 		return h.OpCode, err
@@ -266,6 +333,27 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 			h.Mask,
 			0,
 		)
+	}
+
+	// validate the payload
+	switch h.OpCode {
+	case opClose:
+		if l.framebuf.Len() > 2 {
+			code := CloseStatus(binary.BigEndian.Uint16(l.framebuf.Bytes()[:2]))
+
+			_, valid := validCloseStatus[code]
+			if !valid {
+				return 0, ErrInvalidCloseReason
+			}
+
+			if !utf8.Valid(l.framebuf.Bytes()[2:]) {
+				return 0, ErrInvalidCloseEncoding
+			}
+		}
+	case opText:
+		if !utf8.Valid(l.messagebuf.Bytes()) {
+			return 0, ErrInvalidPayloadEncoding
+		}
 	}
 
 	return h.OpCode, nil
@@ -301,32 +389,7 @@ func (l *listener) error(err error, isFatal bool) {
 	}
 }
 
-func (l *listener) closeWs(conn *Conn) error {
-	cs := CloseStatusNormalClosure
-
-	if l.framebuf.Len() == 1 || l.framebuf.Len() > 125 {
-		cs = CloseStatusProtocolError
-	} else if l.framebuf.Len() >= 2 {
-		_, valid := validCloseStatus[CloseStatus(binary.BigEndian.Uint16(l.framebuf.Bytes()[:2]))]
-		if !valid {
-			cs = CloseStatusProtocolError
-		}
-
-		if !utf8.Valid(l.framebuf.Bytes()[2:]) {
-			cs = CloseStatusInvalidFramePayloadData
-		}
-	}
-
-	_, err := conn.CloseWith(cs, nil, true)
-	return err
-}
-
 func (l *listener) pongWs(conn *Conn) error {
-	if l.framebuf.Len() > 125 {
-		_, err := conn.CloseWith(CloseStatusProtocolError, nil, false)
-		return err
-	}
-
 	hd, err := l.codec.BuildHeader(header{
 		OpCode: opPong,
 		Fin:    true,
@@ -373,4 +436,13 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	if l.handler.OnDisconnect != nil {
 		l.handler.OnDisconnect(conn, derr)
 	}
+}
+
+func (l *listener) discard(conn *Conn, length int64, cerr error) error {
+	_, err := io.CopyN(io.Discard, l.readbuf, length)
+	if err != nil {
+		return err
+	}
+
+	return cerr
 }
