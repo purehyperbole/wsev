@@ -1,7 +1,7 @@
 package wsev
 
 import (
-	"bytes"
+	"bufio"
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
@@ -111,7 +111,7 @@ func New(handler *Handler, opts ...option) *Server {
 		wbuffers: sync.Pool{
 			New: func() any {
 				return &wbuf{
-					b: bytes.NewBuffer(make([]byte, DefaultBufferSize)),
+					b: bufio.NewWriterSize(nil, DefaultBufferSize),
 					c: newWriteCodec(),
 				}
 			},

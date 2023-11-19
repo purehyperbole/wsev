@@ -371,7 +371,6 @@ func (l *listener) register(fd int, conn net.Conn) {
 		conn,
 		l.bufpool,
 		l.flushDeadline,
-		l.writebufsize,
 		func(bc *Conn, err error) {
 			l.disconnect(fd, bc, err)
 		},

@@ -1,7 +1,7 @@
 package wsev
 
 import (
-	"bytes"
+	"bufio"
 	"encoding/binary"
 	"net"
 	"sync"
@@ -13,7 +13,7 @@ import (
 
 // holds a write buffer and codec
 type wbuf struct {
-	b *bytes.Buffer
+	b *bufio.Writer
 	c *codec
 	s [2]byte
 }
@@ -21,23 +21,22 @@ type wbuf struct {
 // A wrapped net.Conn with on demand buffers that implements the net.Conn interface
 type Conn struct {
 	net.Conn
+	v any
 	p *sync.Pool
 	b *wbuf
 	q func(*Conn, error)
 	f time.Duration
-	l int
 	m sync.Mutex
 	n int32
 	c int32
 	s bool
 }
 
-func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, bufsize int, shutdownCallback func(*Conn, error)) *Conn {
+func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, shutdownCallback func(*Conn, error)) *Conn {
 	return &Conn{
 		Conn: conn,
 		p:    bufpool,
 		f:    flush,
-		l:    bufsize,
 		q:    shutdownCallback,
 	}
 }
@@ -46,7 +45,7 @@ func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, bufsize 
 // Write can be made to time out and return an error after a fixed
 // time limit; see SetDeadline and SetWriteDeadline.
 func (c *Conn) Write(b []byte) (int, error) {
-	return c.write(opBinary, len(b), func(buf *bytes.Buffer) (int, error) {
+	return c.write(opBinary, len(b), func(buf *bufio.Writer) (int, error) {
 		return buf.Write(b)
 	})
 }
@@ -55,7 +54,7 @@ func (c *Conn) Write(b []byte) (int, error) {
 // Write can be made to time out and return an error after a fixed
 // time limit; see SetDeadline and SetWriteDeadline.
 func (c *Conn) WriteText(s string) (int, error) {
-	return c.write(opText, len(s), func(buf *bytes.Buffer) (int, error) {
+	return c.write(opText, len(s), func(buf *bufio.Writer) (int, error) {
 		return buf.WriteString(s)
 	})
 }
@@ -84,7 +83,7 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 	// if we don't have a write buffer, then get one from the pool
 	if c.b == nil {
 		c.b = c.p.Get().(*wbuf)
-		c.b.b.Reset()
+		c.b.b.Reset(c.Conn)
 	}
 
 	err := c.b.c.WriteHeader(c.b.b, header{
@@ -109,7 +108,7 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 		return err
 	}
 
-	_, err = c.b.b.WriteTo(c.Conn)
+	err = c.b.b.Flush()
 	if err != nil {
 		return err
 	}
@@ -197,7 +196,17 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 	return nil
 }
 
-func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, error)) (int, error) {
+// Get gets a user specified value
+func (c *Conn) Get() any {
+	return c.v
+}
+
+// Set sets a user specified value
+func (c *Conn) Set(v any) {
+	c.v = v
+}
+
+func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, error)) (int, error) {
 	c.m.Lock()
 	defer c.m.Unlock()
 
@@ -209,7 +218,7 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, erro
 	// if we don't have a write buffer, then get one from the pool
 	if c.b == nil {
 		c.b = c.p.Get().(*wbuf)
-		c.b.b.Reset()
+		c.b.b.Reset(c.Conn)
 	}
 
 	// write the ws header and data to the buffer
@@ -227,12 +236,8 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, erro
 		return n, err
 	}
 
-	// if this buffer is at our high water mark, then flush it to the
-	// underlying connection and release the buffer to the pool
-	if c.b.b.Len() >= c.l {
-		// write all data
-		n, err := c.b.b.WriteTo(c.Conn)
-
+	// if this buffer has been flushed, then return the buffer to the pool
+	if c.b.b.Buffered() < 1 {
 		// return the buffer and remove it from this connection
 		c.p.Put(c.b)
 		c.b = nil
@@ -262,12 +267,12 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bytes.Buffer) (int, erro
 				return
 			}
 
-			if c.b.b.Len() < 1 {
+			if c.b.b.Buffered() < 1 {
 				return
 			}
 
 			// write all data
-			_, err := c.b.b.WriteTo(c.Conn)
+			err := c.b.b.Flush()
 			if err != nil {
 				// mark the connection as closed and call the error callback
 				c.close()
