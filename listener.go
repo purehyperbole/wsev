@@ -18,8 +18,8 @@ import (
 )
 
 type closeError struct {
-	Status    CloseStatus
 	Reason    string
+	Status    CloseStatus
 	immediate bool
 	shutdown  bool
 }
@@ -70,19 +70,19 @@ var (
 )
 
 type listener struct {
-	fd            int           // epoll file descriptor
-	readDeadline  time.Duration // read deadline
-	flushDeadline time.Duration // write buffer flush deadline
-	writebufsize  int           // connection write buffer size to flush at
-	codec         *codec        // frame codec
-	bufpool       *sync.Pool    // connection buffer pool
-	readbuf       *bufio.Reader // read buffer
-	framebuf      *bytes.Buffer // frame buffer
-	messagebuf    *bytes.Buffer // message payload buffer
-	handler       *Handler      // handler
-	conns         sync.Map      // active connections
-	http          http.Server   // http listener
-	_p1           [8]uint64     // cache line padding
+	handler       *Handler
+	codec         *codec
+	bufpool       *sync.Pool
+	readbuf       *bufio.Reader
+	framebuf      *bytes.Buffer
+	messagebuf    *bytes.Buffer
+	conns         sync.Map
+	http          http.Server
+	_p1           [8]uint64
+	readDeadline  time.Duration
+	flushDeadline time.Duration
+	writebufsize  int
+	fd            int
 }
 
 func newListener(epollFd int, handler *Handler, bufpool *sync.Pool, readDeadline, flushDeadline time.Duration, writebufsize int) *listener {

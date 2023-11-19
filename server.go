@@ -95,9 +95,9 @@ type Handler struct {
 }
 
 type Server struct {
+	wbuffers            sync.Pool
 	handler             *Handler
 	listeners           []*listener
-	wbuffers            sync.Pool
 	readDeadline        time.Duration
 	writeBufferDeadline time.Duration
 	readBufferSize      int

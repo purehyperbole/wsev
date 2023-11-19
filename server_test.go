@@ -24,8 +24,8 @@ import (
 
 type testevent struct {
 	conn net.Conn
-	msg  []byte
 	err  error
+	msg  []byte
 }
 
 var testport int = 8000
@@ -640,8 +640,7 @@ func TestServerAutobahn(t *testing.T) {
 	// write config to tempdir
 	workdir := randomdir()
 	fmt.Println("outputting to", workdir)
-	err = os.Mkdir(filepath.Join(workdir, "config"), 0755)
-	fmt.Println(err)
+	os.Mkdir(filepath.Join(workdir, "config"), 0755)
 	os.Mkdir(filepath.Join(workdir, "reports"), 0755)
 
 	config, _ := json.Marshal(map[string]interface{}{
