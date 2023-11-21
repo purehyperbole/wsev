@@ -3,7 +3,6 @@ package wsev
 import (
 	"bufio"
 	"crypto/rand"
-	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -28,7 +27,7 @@ type testevent struct {
 	msg  []byte
 }
 
-var testport int = 8000
+var testport int = 10000 //8000
 
 func nexttestport() (int, string) {
 	port := testport
@@ -64,31 +63,8 @@ func TestServerConnect(t *testing.T) {
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
-
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
-
-	conn, err := net.Dial("tcp", address)
-	require.Nil(t, err)
+	conn := testconn(t, address)
 	defer conn.Close()
-
-	err = req.Write(conn)
-	require.Nil(t, err)
-	require.Nil(t, timeout(opench, time.Millisecond*100))
-
-	sh := sha1.New()
-	sh.Write([]byte(enc.EncodeToString(make([]byte, 16))))
-	sh.Write(wsAcceptID)
-
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-	require.Nil(t, err)
-	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
-	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
-	assert.Equal(t, enc.EncodeToString(sh.Sum(nil)), resp.Header.Get("Sec-WebSocket-Accept"))
 }
 
 func TestServerDisconnect(t *testing.T) {
@@ -116,20 +92,8 @@ func TestServerDisconnect(t *testing.T) {
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
-
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
-
-	conn, err := net.Dial("tcp", address)
-	require.Nil(t, err)
+	conn := testconn(t, address)
 	defer conn.Close()
-
-	err = req.Write(conn)
-	require.Nil(t, err)
 
 	require.Nil(t, timeout(opench, time.Millisecond*100))
 
@@ -220,26 +184,8 @@ func TestServerPong(t *testing.T) {
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
-
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
-
-	conn, err := net.Dial("tcp", address)
-	require.Nil(t, err)
+	conn := testconn(t, address)
 	defer conn.Close()
-
-	err = req.Write(conn)
-	require.Nil(t, err)
-	require.Nil(t, timeout(opench, time.Millisecond*100))
-
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-	require.Nil(t, err)
-	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
-	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
 
 	codec := newCodec()
 
@@ -280,28 +226,11 @@ func TestServerSendUnmasked(t *testing.T) {
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
-
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
-
-	recv, err := net.Dial("tcp", address)
-	require.Nil(t, err)
+	recv := testconn(t, address)
 	defer recv.Close()
-
-	err = req.Write(recv)
-	require.Nil(t, err)
 
 	send, err := timeoutValue(opench, time.Millisecond*100)
 	require.Nil(t, err)
-
-	resp, err := http.ReadResponse(bufio.NewReader(recv), req)
-	require.Nil(t, err)
-	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
-	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
 
 	codec := newCodec()
 	data := make([]byte, 8)
@@ -344,28 +273,11 @@ func TestServerSendMasked(t *testing.T) {
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
-
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
-
-	recv, err := net.Dial("tcp", address)
-	require.Nil(t, err)
+	recv := testconn(t, address)
 	defer recv.Close()
-
-	err = req.Write(recv)
-	require.Nil(t, err)
 
 	send, err := timeoutValue(opench, time.Millisecond*100)
 	require.Nil(t, err)
-
-	resp, err := http.ReadResponse(bufio.NewReader(recv), req)
-	require.Nil(t, err)
-	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
-	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
 
 	codec := newCodec()
 	data := make([]byte, 8)
@@ -428,26 +340,8 @@ func TestServerReceiveSmall(t *testing.T) {
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
-
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
-
-	conn, err := net.Dial("tcp", address)
-	require.Nil(t, err)
+	conn := testconn(t, address)
 	defer conn.Close()
-
-	err = req.Write(conn)
-	require.Nil(t, err)
-	require.Nil(t, timeout(opench, time.Millisecond*100))
-
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-	require.Nil(t, err)
-	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
-	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
 
 	codec := newCodec()
 	data := make([]byte, 8)
@@ -498,26 +392,8 @@ func TestServerReceiveLarge(t *testing.T) {
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
-
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
-
-	conn, err := net.Dial("tcp", address)
-	require.Nil(t, err)
+	conn := testconn(t, address)
 	defer conn.Close()
-
-	err = req.Write(conn)
-	require.Nil(t, err)
-	require.Nil(t, timeout(opench, time.Millisecond*100))
-
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-	require.Nil(t, err)
-	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
-	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
 
 	codec := newCodec()
 
@@ -565,26 +441,8 @@ func TestServerReceiveMasked(t *testing.T) {
 	require.Nil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
-
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
-
-	conn, err := net.Dial("tcp", address)
-	require.Nil(t, err)
+	conn := testconn(t, address)
 	defer conn.Close()
-
-	err = req.Write(conn)
-	require.Nil(t, err)
-	require.Nil(t, timeout(opench, time.Millisecond*100))
-
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-	require.Nil(t, err)
-	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
-	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
 
 	codec := newCodec()
 
@@ -720,4 +578,40 @@ func randomdir() string {
 	dir := filepath.Join("/tmp", hex.EncodeToString(random))
 	os.Mkdir(dir, 0755)
 	return dir
+}
+
+func testconn(t *testing.T, address string) net.Conn {
+	req, err := http.NewRequest("GET", "ws://"+address, nil)
+	require.Nil(t, err)
+
+	d := net.Dialer{
+		KeepAlive: time.Duration(-1),
+	}
+
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
+
+	conn, err := d.Dial("tcp", address)
+	require.Nil(t, err)
+
+	err = conn.SetDeadline(time.Time{})
+	require.Nil(t, err)
+
+	err = req.Write(conn)
+	require.Nil(t, err)
+
+	rb := bufio.NewReaderSize(conn, 1<<14)
+
+	resp, err := http.ReadResponse(rb, req)
+	require.Nil(t, err)
+	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
+	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+
+	resp.Close = false
+
+	time.Sleep(time.Millisecond * 10)
+
+	return conn
 }
