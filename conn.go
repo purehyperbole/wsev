@@ -70,7 +70,9 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 			c.q(c, nil)
 		}
 		if c.b != nil {
+			c.b.b.Reset(nil)
 			c.p.Put(c.b)
+			c.b = nil
 		}
 		c.m.Unlock()
 	}()
@@ -142,6 +144,7 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 		}
 		// return the buffer and remove it from this connection
 		if c.b != nil {
+			c.b.b.Reset(nil)
 			c.p.Put(c.b)
 			c.b = nil
 		}
@@ -239,6 +242,7 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 	// if this buffer has been flushed, then return the buffer to the pool
 	if c.b.b.Buffered() < 1 {
 		// return the buffer and remove it from this connection
+		c.b.b.Reset(nil)
 		c.p.Put(c.b)
 		c.b = nil
 
@@ -255,6 +259,7 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 				// return the buffer and remove it from this connection
 				if c.b != nil {
 					c.p.Put(c.b)
+					c.b.b.Reset(nil)
 					c.b = nil
 				}
 
