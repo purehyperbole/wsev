@@ -59,18 +59,18 @@ const (
 )
 
 var validCloseStatus = map[CloseStatus]struct{}{
-	CloseStatusNormalClosure:           struct{}{},
-	CloseStatusGoingAway:               struct{}{},
-	CloseStatusProtocolError:           struct{}{},
-	CloseStatusUnsupportedData:         struct{}{},
-	CloseStatusInvalidFramePayloadData: struct{}{},
-	CloseStatusPolicyViolation:         struct{}{},
-	CloseStatusMessageTooBig:           struct{}{},
-	CloseStatusMandatoryExtension:      struct{}{},
-	CloseStatusInternalServerErr:       struct{}{},
-	CloseStatusServiceRestart:          struct{}{},
-	CloseStatusTryAgainLater:           struct{}{},
-	CloseStatusTLSHandshake:            struct{}{},
+	CloseStatusNormalClosure:           {},
+	CloseStatusGoingAway:               {},
+	CloseStatusProtocolError:           {},
+	CloseStatusUnsupportedData:         {},
+	CloseStatusInvalidFramePayloadData: {},
+	CloseStatusPolicyViolation:         {},
+	CloseStatusMessageTooBig:           {},
+	CloseStatusMandatoryExtension:      {},
+	CloseStatusInternalServerErr:       {},
+	CloseStatusServiceRestart:          {},
+	CloseStatusTryAgainLater:           {},
+	CloseStatusTLSHandshake:            {},
 }
 
 func init() {

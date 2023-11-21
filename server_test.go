@@ -2,6 +2,7 @@ package wsev
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -16,9 +17,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 type testevent struct {
@@ -60,7 +58,7 @@ func TestServerConnect(t *testing.T) {
 	port, address := nexttestport()
 
 	err := s.Serve(port)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer s.Close()
 
 	conn := testconn(t, address)
@@ -89,13 +87,13 @@ func TestServerDisconnect(t *testing.T) {
 	port, address := nexttestport()
 
 	err := s.Serve(port)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer s.Close()
 
 	conn := testconn(t, address)
 	defer conn.Close()
 
-	require.Nil(t, timeout(opench, time.Millisecond*100))
+	RequireNil(t, timeout(opench, time.Millisecond*100))
 
 	codec := newCodec()
 
@@ -104,11 +102,11 @@ func TestServerDisconnect(t *testing.T) {
 		Fin:    true,
 	})
 
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	event, err := timeoutValue(closech, time.Millisecond*100)
-	require.Nil(t, err)
-	assert.Nil(t, (*event).err)
+	RequireNil(t, err)
+	AssertNil(t, (*event).err)
 }
 
 func TestServerDisconnectTimeout(t *testing.T) {
@@ -136,11 +134,11 @@ func TestServerDisconnectTimeout(t *testing.T) {
 	port, address := nexttestport()
 
 	err := s.Serve(port)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer s.Close()
 
 	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
@@ -148,14 +146,14 @@ func TestServerDisconnectTimeout(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
 
 	conn, err := net.Dial("tcp", address)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer conn.Close()
 
 	err = req.Write(conn)
-	require.Nil(t, err)
+	RequireNil(t, err)
 
-	require.Nil(t, timeout(opench, time.Millisecond*100))
-	require.Nil(t, timeout(closech, time.Millisecond*100))
+	RequireNil(t, timeout(opench, time.Millisecond*100))
+	RequireNil(t, timeout(closech, time.Millisecond*100))
 }
 
 func TestServerPong(t *testing.T) {
@@ -181,7 +179,7 @@ func TestServerPong(t *testing.T) {
 	port, address := nexttestport()
 
 	err := s.Serve(port)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer s.Close()
 
 	conn := testconn(t, address)
@@ -194,14 +192,14 @@ func TestServerPong(t *testing.T) {
 		Fin:    true,
 	})
 
-	require.Nil(t, err)
-	require.Nil(t, timeout(pingch, time.Millisecond*100))
+	RequireNil(t, err)
+	RequireNil(t, timeout(pingch, time.Millisecond*100))
 	conn.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
 
 	h, err := codec.ReadHeader(conn)
-	require.Nil(t, err)
-	assert.Equal(t, opPong, h.OpCode)
-	assert.True(t, h.Fin)
+	RequireNil(t, err)
+	AssertEqual(t, opPong, h.OpCode)
+	AssertTrue(t, h.Fin)
 }
 
 func TestServerSendUnmasked(t *testing.T) {
@@ -223,14 +221,14 @@ func TestServerSendUnmasked(t *testing.T) {
 	port, address := nexttestport()
 
 	err := s.Serve(port)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer s.Close()
 
 	recv := testconn(t, address)
 	defer recv.Close()
 
 	send, err := timeoutValue(opench, time.Millisecond*100)
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	codec := newCodec()
 	data := make([]byte, 8)
@@ -239,15 +237,15 @@ func TestServerSendUnmasked(t *testing.T) {
 		binary.LittleEndian.PutUint64(data, uint64(i))
 
 		_, err := (*send).conn.Write(data)
-		require.Nil(t, err)
+		RequireNil(t, err)
 
 		h, err := codec.ReadHeader(recv)
-		require.Nil(t, err)
-		assert.Equal(t, int64(8), h.Length)
+		RequireNil(t, err)
+		AssertEqual(t, int64(8), h.Length)
 
 		rdata := make([]byte, h.Length)
 		recv.Read(rdata)
-		assert.Equal(t, data, rdata)
+		AssertEqual(t, data, rdata)
 	}
 }
 
@@ -270,14 +268,14 @@ func TestServerSendMasked(t *testing.T) {
 	port, address := nexttestport()
 
 	err := s.Serve(port)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer s.Close()
 
 	recv := testconn(t, address)
 	defer recv.Close()
 
 	send, err := timeoutValue(opench, time.Millisecond*100)
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	codec := newCodec()
 	data := make([]byte, 8)
@@ -296,18 +294,18 @@ func TestServerSendMasked(t *testing.T) {
 		cipher(data, h.Mask, 0)
 
 		err = codec.WriteHeader((*send).conn.(*Conn).Conn, h)
-		require.Nil(t, err)
+		RequireNil(t, err)
 
 		_, err := (*send).conn.(*Conn).Conn.Write(data)
-		require.Nil(t, err)
+		RequireNil(t, err)
 
 		h, err = codec.ReadHeader(recv)
-		require.Nil(t, err)
-		assert.Equal(t, int64(8), h.Length)
+		RequireNil(t, err)
+		AssertEqual(t, int64(8), h.Length)
 
 		rdata := make([]byte, h.Length)
 		recv.Read(rdata)
-		assert.Equal(t, data, rdata)
+		AssertEqual(t, data, rdata)
 	}
 }
 
@@ -327,7 +325,7 @@ func TestServerReceiveSmall(t *testing.T) {
 				closech <- &testevent{conn: conn, err: err}
 			},
 			OnMessage: func(conn *Conn, msg []byte) {
-				assert.Equal(t, counter, binary.LittleEndian.Uint64(msg))
+				AssertEqual(t, counter, binary.LittleEndian.Uint64(msg))
 				counter++
 				msgchan <- &testevent{conn: conn}
 			},
@@ -337,7 +335,7 @@ func TestServerReceiveSmall(t *testing.T) {
 	port, address := nexttestport()
 
 	err := s.Serve(port)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer s.Close()
 
 	conn := testconn(t, address)
@@ -353,13 +351,13 @@ func TestServerReceiveSmall(t *testing.T) {
 			Length: 8,
 		})
 
-		require.Nil(t, err)
+		RequireNil(t, err)
 
 		binary.LittleEndian.PutUint64(data, uint64(i))
 
 		_, err := conn.Write(data)
-		require.Nil(t, err)
-		require.Nil(t, timeout(msgchan, time.Millisecond*100))
+		RequireNil(t, err)
+		RequireNil(t, timeout(msgchan, time.Millisecond*100))
 	}
 }
 
@@ -380,7 +378,7 @@ func TestServerReceiveLarge(t *testing.T) {
 				closech <- &testevent{conn: conn, err: err}
 			},
 			OnMessage: func(conn *Conn, msg []byte) {
-				assert.Equal(t, data, msg)
+				AssertEqual(t, data, msg)
 				msgchan <- &testevent{conn: conn}
 			},
 		},
@@ -389,7 +387,7 @@ func TestServerReceiveLarge(t *testing.T) {
 	port, address := nexttestport()
 
 	err := s.Serve(port)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer s.Close()
 
 	conn := testconn(t, address)
@@ -404,11 +402,11 @@ func TestServerReceiveLarge(t *testing.T) {
 			Length: int64(len(data)),
 		})
 
-		require.Nil(t, err)
+		RequireNil(t, err)
 
 		_, err := conn.Write(data)
-		require.Nil(t, err)
-		require.Nil(t, timeout(msgchan, time.Millisecond*500))
+		RequireNil(t, err)
+		RequireNil(t, timeout(msgchan, time.Millisecond*500))
 	}
 }
 
@@ -429,7 +427,7 @@ func TestServerReceiveMasked(t *testing.T) {
 				closech <- &testevent{conn: conn, err: err}
 			},
 			OnMessage: func(conn *Conn, msg []byte) {
-				assert.Equal(t, data, msg)
+				AssertEqual(t, data, msg)
 				msgchan <- &testevent{conn: conn}
 			},
 		},
@@ -438,7 +436,7 @@ func TestServerReceiveMasked(t *testing.T) {
 	port, address := nexttestport()
 
 	err := s.Serve(port)
-	require.Nil(t, err)
+	RequireNil(t, err)
 	defer s.Close()
 
 	conn := testconn(t, address)
@@ -461,11 +459,11 @@ func TestServerReceiveMasked(t *testing.T) {
 		cipher(mcopy, h.Mask, 0)
 
 		err = codec.WriteHeader(conn, h)
-		require.Nil(t, err)
+		RequireNil(t, err)
 
 		_, err := conn.Write(mcopy)
-		require.Nil(t, err)
-		require.Nil(t, timeout(msgchan, time.Millisecond*500))
+		RequireNil(t, err)
+		RequireNil(t, timeout(msgchan, time.Millisecond*500))
 	}
 }
 
@@ -482,7 +480,7 @@ func TestServerAutobahn(t *testing.T) {
 			conn.WriteText(msg)
 		},
 		OnError: func(err error, fatal bool) {
-			require.False(t, fatal)
+			RequireFalse(t, fatal)
 		},
 	}
 
@@ -493,7 +491,7 @@ func TestServerAutobahn(t *testing.T) {
 		WithWriteBufferDeadline(time.Duration(time.Millisecond)),
 	).Serve(8000)
 
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	// write config to tempdir
 	workdir := randomdir()
@@ -513,7 +511,7 @@ func TestServerAutobahn(t *testing.T) {
 	})
 
 	err = os.WriteFile(filepath.Join(workdir, "config", "fuzzingclient.json"), config, 0644)
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	// run autobahn testsuite container
 	cmd := exec.Command(
@@ -535,11 +533,11 @@ func TestServerAutobahn(t *testing.T) {
 	)
 
 	stdout, err := cmd.StdoutPipe()
-	require.Nil(t, err)
+	RequireNil(t, err)
 	output := bufio.NewScanner(stdout)
 
 	err = cmd.Start()
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	for output.Scan() {
 		// TODO detect test case and check report json
@@ -551,7 +549,7 @@ func TestServerAutobahn(t *testing.T) {
 	}
 
 	err = cmd.Wait()
-	require.Nil(t, err)
+	RequireNil(t, err)
 }
 
 func timeout[T any](ch chan T, after time.Duration) error {
@@ -582,7 +580,7 @@ func randomdir() string {
 
 func testconn(t *testing.T, address string) net.Conn {
 	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	d := net.Dialer{
 		KeepAlive: time.Duration(-1),
@@ -594,24 +592,86 @@ func testconn(t *testing.T, address string) net.Conn {
 	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
 
 	conn, err := d.Dial("tcp", address)
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	err = conn.SetDeadline(time.Time{})
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	err = req.Write(conn)
-	require.Nil(t, err)
+	RequireNil(t, err)
 
 	rb := bufio.NewReaderSize(conn, 1<<14)
 
 	resp, err := http.ReadResponse(rb, req)
-	require.Nil(t, err)
-	assert.Equal(t, "Upgrade", resp.Header.Get("Connection"))
-	assert.Equal(t, "websocket", resp.Header.Get("Upgrade"))
+	RequireNil(t, err)
+	AssertEqual(t, "Upgrade", resp.Header.Get("Connection"))
+	AssertEqual(t, "websocket", resp.Header.Get("Upgrade"))
 
 	resp.Close = false
 
 	time.Sleep(time.Millisecond * 10)
 
 	return conn
+}
+
+func AssertNil(t *testing.T, v any) {
+	if v != nil {
+		t.Fail()
+	}
+}
+
+func RequireNil(t *testing.T, v any) {
+	if v != nil {
+		t.FailNow()
+	}
+}
+
+func AssertEqual(t *testing.T, e, a any) {
+	eb, eok := e.([]byte)
+	ab, aok := a.([]byte)
+
+	if eok && aok {
+		if !bytes.Equal(eb, ab) {
+			t.Fail()
+		}
+	} else if e != a {
+		t.Fail()
+	}
+}
+
+func RequireEqual(t *testing.T, e, a any) {
+	eb, eok := e.([]byte)
+	ab, aok := a.([]byte)
+
+	if eok && aok {
+		if !bytes.Equal(eb, ab) {
+			t.FailNow()
+		}
+	} else if e != a {
+		t.FailNow()
+	}
+}
+
+func AssertTrue(t *testing.T, b bool) {
+	if !b {
+		t.Fail()
+	}
+}
+
+func RequireTrue(t *testing.T, b bool) {
+	if !b {
+		t.FailNow()
+	}
+}
+
+func AssertFalse(t *testing.T, b bool) {
+	if b {
+		t.Fail()
+	}
+}
+
+func RequireFalse(t *testing.T, b bool) {
+	if b {
+		t.FailNow()
+	}
 }

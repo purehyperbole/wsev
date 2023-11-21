@@ -1,4 +1,5 @@
-# wsev
+# wsev [![Go Reference](https://pkg.go.dev/badge/github.com/purehyperbole/wsev.svg)](https://pkg.go.dev/github.com/purehyperbole/wsev) [![Go Report Card](https://goreportcard.com/badge/github.com/purehyperbole/wsev)](https://goreportcard.com/report/github.com/purehyperbole/wsev) ![Build Status](https://github.com/purehyperbole/wsev/actions/workflows/ci.yml/badge.svg)
+
 
 An event based websocket server implementation based on epoll, designed for ease of use and high connection concurrency.
 
@@ -10,6 +11,7 @@ Some parts for reading and writing websocket headers have been derrvied from the
 - [x] SO_REUSEPORT for multiple epoll listeners on the same port
 - [x] Pooled write buffers for efficient memory usage
 - [x] Passes the [autobahn testsuite](https://github.com/crossbario/autobahn-testsuite)
+- [x] Only depends on `golang.org/x/sys`
 - [ ] Detect connection timeouts
 
 ## Setup
@@ -50,12 +52,12 @@ func main() {
     }
 
     // will start a new websocket server on port 9000
-    // an event listener will be started for each cpu
-    // as determined by GOMAXPROCS
     err := wsev.New(
         h, 
-        // 
-        // the deadline that will be set when reading from sockets that have data
+        // the number of listener goroutines that will be started
+        // defaults to GOMAXPROCS
+        wsev.WithListeners(count int),
+        // the deadline that used when reading from sockets that have data
         wsev.WithReadDeadline(time.Millisecond*100),
         // the deadline that data will be flushed to the underlying connection 
         // when the data in the buffer has not exceeded the buffer size
