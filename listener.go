@@ -376,11 +376,11 @@ func (l *listener) register(fd int, conn net.Conn) {
 		},
 	)
 
-	l.conns.Store(fd, bc)
-
 	if l.handler.OnConnect != nil {
 		l.handler.OnConnect(bc)
 	}
+
+	l.conns.Store(fd, bc)
 }
 
 func (l *listener) error(err error, isFatal bool) {
