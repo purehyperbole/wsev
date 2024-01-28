@@ -29,8 +29,12 @@ func (e *closeError) Error() string {
 }
 
 var (
-	ErrConnectionAlreadyClosed       = errors.New("connection already closed")
-	ErrInvalidRSVBits          error = &closeError{
+	ErrConnectionAlreadyClosed = errors.New("connection already closed")
+	ErrConnectionTimeout       = &closeError{
+		Status: CloseStatusAbnormalClosure,
+		Reason: "connection timeout",
+	}
+	ErrInvalidRSVBits error = &closeError{
 		Status: CloseStatusProtocolError,
 		Reason: "non-zero rsv bits not supported",
 		// immediate: true,
@@ -76,12 +80,14 @@ type listener struct {
 	readbuf       *bufio.Reader
 	framebuf      *bytes.Buffer
 	messagebuf    *bytes.Buffer
+	timerheap     heap
 	conns         sync.Map
 	http          http.Server
 	_p1           [8]uint64
 	readDeadline  time.Duration
 	flushDeadline time.Duration
 	writebufsize  int
+	counter       int
 	fd            int
 }
 
@@ -109,14 +115,8 @@ func newListener(epollFd int, handler *Handler, bufpool *sync.Pool, readDeadline
 func (l *listener) handleEvents() {
 	events := make([]syscall.EpollEvent, 128)
 
-	// TODO we can't rely on ReadDeadline for connections
-	// that are not
-	// use heap to track all connections and time them out
-	// if they are not active within our deadline
-
 	// wait for epoll to return some events
 	for {
-		// TODO make wait duration configurable
 		ec, err := syscall.EpollWait(l.fd, events, 10)
 		if err != nil {
 			// ignore interupted syscall
@@ -127,6 +127,15 @@ func (l *listener) handleEvents() {
 			l.error(err, true)
 			return
 		}
+
+		if ec < 1 {
+			// use this as an opportunity to clear out old connections
+			// that have timed out
+			l.purgeIdle()
+			continue
+		}
+
+		now := time.Now().Unix()
 
 		for i := 0; i < ec; i++ {
 			conn, ok := l.conns.Load(int(events[i].Fd))
@@ -154,7 +163,9 @@ func (l *listener) handleEvents() {
 					break
 				}
 			}
-			// TODO set last read time
+
+			// reset the timer on the connection
+			l.timerheap.decrease(cn, now)
 		}
 	}
 }
@@ -381,6 +392,27 @@ func (l *listener) register(fd int, conn net.Conn) {
 	}
 
 	l.conns.Store(fd, bc)
+	l.timerheap.push(time.Now().Unix(), bc)
+}
+
+func (l *listener) purgeIdle() {
+	// dont check on every iteration
+	l.counter++
+
+	if l.counter%10 != 0 {
+		return
+	}
+
+	now := time.Now().Add(-l.readDeadline).Unix()
+
+	for {
+		conn := l.timerheap.popIf(now)
+		if conn == nil {
+			return
+		}
+
+		conn.CloseImmediatelyWith(CloseStatusAbnormalClosure, ErrConnectionTimeout.Reason, true)
+	}
 }
 
 func (l *listener) error(err error, isFatal bool) {
@@ -445,4 +477,13 @@ func (l *listener) discard(conn *Conn, length int64, cerr error) error {
 	}
 
 	return cerr
+}
+
+func (l *listener) shutdown() error {
+	err := l.http.Close()
+	if err != nil {
+		return err
+	}
+
+	return unix.Close(l.fd)
 }

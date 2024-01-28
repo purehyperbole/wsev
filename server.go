@@ -205,7 +205,7 @@ func (s *Server) Serve(port int) error {
 // Close closes all of the http servers
 func (s *Server) Close() error {
 	for i := range s.listeners {
-		err := s.listeners[i].http.Close()
+		err := s.listeners[i].shutdown()
 		if err != nil {
 			return err
 		}

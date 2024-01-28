@@ -53,6 +53,7 @@ func TestServerConnect(t *testing.T) {
 				msgch <- &testevent{conn: conn, msg: msg}
 			},
 		},
+		WithReadDeadline(time.Second*5),
 	)
 
 	port, address := nexttestport()
@@ -82,6 +83,7 @@ func TestServerDisconnect(t *testing.T) {
 				msgch <- &testevent{conn: conn, msg: msg}
 			},
 		},
+		WithReadDeadline(time.Second*5),
 	)
 
 	port, address := nexttestport()
@@ -110,8 +112,6 @@ func TestServerDisconnect(t *testing.T) {
 }
 
 func TestServerDisconnectTimeout(t *testing.T) {
-	t.Skip("implement manual scan of connections using last read times and heap")
-
 	opench := make(chan *testevent, 1)
 	closech := make(chan *testevent, 1)
 	msgch := make(chan *testevent, 1)
@@ -128,7 +128,7 @@ func TestServerDisconnectTimeout(t *testing.T) {
 				msgch <- &testevent{conn: conn, msg: msg}
 			},
 		},
-		WithReadDeadline(time.Millisecond*100),
+		WithReadDeadline(time.Second),
 	)
 
 	port, address := nexttestport()
@@ -137,23 +137,11 @@ func TestServerDisconnectTimeout(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	req, err := http.NewRequest("GET", "ws://"+address, nil)
-	RequireNil(t, err)
-
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", enc.EncodeToString(make([]byte, 16)))
-
-	conn, err := net.Dial("tcp", address)
-	RequireNil(t, err)
+	conn := testconn(t, address)
 	defer conn.Close()
 
-	err = req.Write(conn)
-	RequireNil(t, err)
-
 	RequireNil(t, timeout(opench, time.Millisecond*100))
-	RequireNil(t, timeout(closech, time.Millisecond*100))
+	RequireNil(t, timeout(closech, time.Second*5))
 }
 
 func TestServerPong(t *testing.T) {
@@ -173,7 +161,7 @@ func TestServerPong(t *testing.T) {
 				pingch <- &testevent{conn: conn}
 			},
 		},
-		WithReadDeadline(time.Millisecond*100),
+		WithReadDeadline(time.Second*5),
 	)
 
 	port, address := nexttestport()
@@ -216,6 +204,7 @@ func TestServerSendUnmasked(t *testing.T) {
 			},
 		},
 		WithWriteBufferDeadline(time.Millisecond),
+		WithReadDeadline(time.Second*5),
 	)
 
 	port, address := nexttestport()
@@ -263,6 +252,7 @@ func TestServerSendMasked(t *testing.T) {
 			},
 		},
 		WithWriteBufferDeadline(time.Millisecond),
+		WithReadDeadline(time.Second*5),
 	)
 
 	port, address := nexttestport()
@@ -330,6 +320,7 @@ func TestServerReceiveSmall(t *testing.T) {
 				msgchan <- &testevent{conn: conn}
 			},
 		},
+		WithReadDeadline(time.Second*5),
 	)
 
 	port, address := nexttestport()
@@ -382,6 +373,7 @@ func TestServerReceiveLarge(t *testing.T) {
 				msgchan <- &testevent{conn: conn}
 			},
 		},
+		WithReadDeadline(time.Second*5),
 	)
 
 	port, address := nexttestport()
@@ -431,6 +423,7 @@ func TestServerReceiveMasked(t *testing.T) {
 				msgchan <- &testevent{conn: conn}
 			},
 		},
+		WithReadDeadline(time.Second*5),
 	)
 
 	port, address := nexttestport()
@@ -487,8 +480,8 @@ func TestServerAutobahn(t *testing.T) {
 	// start echo server
 	err := New(
 		h,
-		WithReadDeadline(time.Second),
-		WithWriteBufferDeadline(time.Duration(time.Millisecond)),
+		WithReadDeadline(time.Second*10),
+		WithWriteBufferDeadline(time.Millisecond),
 	).Serve(8000)
 
 	RequireNil(t, err)

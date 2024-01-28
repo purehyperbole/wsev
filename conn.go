@@ -21,15 +21,16 @@ type wbuf struct {
 // A wrapped net.Conn with on demand buffers that implements the net.Conn interface
 type Conn struct {
 	net.Conn
-	v any
-	p *sync.Pool
-	b *wbuf
-	q func(*Conn, error)
-	f time.Duration
-	m sync.Mutex
-	n int32
-	c int32
-	s bool
+	v any                // user defined  value
+	p *sync.Pool         // buffer pool
+	b *wbuf              // acquired write buffer
+	q func(*Conn, error) // quit callback
+	f time.Duration      // flush interval
+	m sync.Mutex         // write buffer lock
+	h int                // index of this connection in timer heap
+	n int32              // marks a continuation frame
+	c int32              // marks a connection as closed
+	s bool               // marks for flush scheduling
 }
 
 func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, shutdownCallback func(*Conn, error)) *Conn {

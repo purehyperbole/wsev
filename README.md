@@ -12,7 +12,7 @@ Some parts for reading and writing websocket headers have been derrvied from the
 - [x] Pooled write buffers for efficient memory usage
 - [x] Passes the [autobahn testsuite](https://github.com/crossbario/autobahn-testsuite)
 - [x] Only depends on `golang.org/x/sys`
-- [ ] Detect connection timeouts
+- [x] Detect connection timeouts
 
 ## Setup
 
