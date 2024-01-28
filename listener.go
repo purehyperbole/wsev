@@ -81,6 +81,7 @@ type listener struct {
 	framebuf      *bytes.Buffer
 	messagebuf    *bytes.Buffer
 	timerheap     heap
+	timermu       sync.Mutex
 	conns         sync.Map
 	http          http.Server
 	_p1           [8]uint64
@@ -164,8 +165,12 @@ func (l *listener) handleEvents() {
 				}
 			}
 
-			// reset the timer on the connection
-			l.timerheap.decrease(cn, now)
+			if cn.h > HeapRemoved {
+				// reset the timer on the connection
+				l.timermu.Lock()
+				l.timerheap.decrease(cn, now)
+				l.timermu.Unlock()
+			}
 		}
 	}
 }
@@ -392,7 +397,10 @@ func (l *listener) register(fd int, conn net.Conn) {
 	}
 
 	l.conns.Store(fd, bc)
+
+	l.timermu.Lock()
 	l.timerheap.push(time.Now().Unix(), bc)
+	l.timermu.Unlock()
 }
 
 func (l *listener) purgeIdle() {
@@ -404,6 +412,9 @@ func (l *listener) purgeIdle() {
 	}
 
 	now := time.Now().Add(-l.readDeadline).Unix()
+
+	l.timermu.Lock()
+	defer l.timermu.Unlock()
 
 	for {
 		conn := l.timerheap.popIf(now)

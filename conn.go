@@ -11,6 +11,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	HeapRemoved    = -1
+	HeapUnassigned = -2
+)
+
 // holds a write buffer and codec
 type wbuf struct {
 	b *bufio.Writer
@@ -39,6 +44,7 @@ func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, shutdown
 		p:    bufpool,
 		f:    flush,
 		q:    shutdownCallback,
+		h:    HeapUnassigned,
 	}
 }
 
