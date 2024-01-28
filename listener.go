@@ -377,12 +377,6 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 }
 
 func (l *listener) register(fd int, conn net.Conn) {
-	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
-	if err != nil {
-		l.error(fmt.Errorf("failed to add conn fd to epoll: %w", err), false)
-		return
-	}
-
 	bc := newBufConn(
 		conn,
 		l.bufpool,
@@ -396,11 +390,17 @@ func (l *listener) register(fd int, conn net.Conn) {
 		l.handler.OnConnect(bc)
 	}
 
-	l.conns.Store(fd, bc)
-
 	l.timermu.Lock()
 	l.timerheap.push(time.Now().Unix(), bc)
 	l.timermu.Unlock()
+
+	l.conns.Store(fd, bc)
+
+	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
+	if err != nil {
+		l.error(fmt.Errorf("failed to add conn fd to epoll: %w", err), false)
+		return
+	}
 }
 
 func (l *listener) purgeIdle() {
