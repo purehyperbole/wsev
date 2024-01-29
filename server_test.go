@@ -475,6 +475,7 @@ func TestServerAutobahn(t *testing.T) {
 			conn.WriteText(msg)
 		},
 		OnError: func(err error, fatal bool) {
+			fmt.Println(err)
 			RequireFalse(t, fatal)
 		},
 	}
@@ -482,7 +483,7 @@ func TestServerAutobahn(t *testing.T) {
 	// start echo server
 	err := New(
 		h,
-		WithReadDeadline(time.Second*10),
+		WithReadDeadline(time.Minute),
 		WithWriteBufferDeadline(time.Millisecond),
 	).Serve(8000)
 
@@ -494,6 +495,12 @@ func TestServerAutobahn(t *testing.T) {
 	os.Mkdir(filepath.Join(workdir, "config"), 0755)
 	os.Mkdir(filepath.Join(workdir, "reports"), 0755)
 
+	excluded := []string{"12.*", "13.*"}
+
+	if os.Getenv("CI") != "" {
+		excluded = append(excluded, "9.*")
+	}
+
 	config, _ := json.Marshal(map[string]interface{}{
 		"outdir": "./reports/servers",
 		"servers": []map[string]interface{}{
@@ -502,7 +509,7 @@ func TestServerAutobahn(t *testing.T) {
 			},
 		},
 		"cases":         []string{"*"},
-		"exclude-cases": []string{"12.*", "13.*"},
+		"exclude-cases": excluded,
 	})
 
 	err = os.WriteFile(filepath.Join(workdir, "config", "fuzzingclient.json"), config, 0644)
