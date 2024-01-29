@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -577,6 +578,15 @@ func TestServerAutobahn(t *testing.T) {
 		waiter, _ := waiting.Load(testcase)
 		if results.Behavior == "FAILED" || results.BehaviorClose == "FAILED" {
 			waiter.(chan bool) <- false
+
+			data, _ := os.ReadFile(fmt.Sprintf(
+				"%s/reports/servers/unknownserver_case_%s.html",
+				workdir,
+				strings.ReplaceAll(testcase, ".", "_"),
+			))
+
+			fmt.Println(base64.RawURLEncoding.EncodeToString(data))
+
 		} else {
 			waiter.(chan bool) <- true
 		}
