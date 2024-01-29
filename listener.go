@@ -126,6 +126,7 @@ func (l *listener) handleEvents() {
 			}
 
 			l.error(err, true)
+			fmt.Println("EXITING", err)
 			return
 		}
 
