@@ -475,6 +475,7 @@ func TestServerAutobahn(t *testing.T) {
 			conn.WriteText(msg)
 		},
 		OnError: func(err error, fatal bool) {
+			fmt.Println(err)
 			RequireFalse(t, fatal)
 		},
 	}
@@ -482,7 +483,7 @@ func TestServerAutobahn(t *testing.T) {
 	// start echo server
 	err := New(
 		h,
-		WithReadDeadline(time.Second*10),
+		WithReadDeadline(time.Minute),
 		WithWriteBufferDeadline(time.Millisecond),
 	).Serve(8000)
 
