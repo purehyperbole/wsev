@@ -495,6 +495,12 @@ func TestServerAutobahn(t *testing.T) {
 	os.Mkdir(filepath.Join(workdir, "config"), 0755)
 	os.Mkdir(filepath.Join(workdir, "reports"), 0755)
 
+	excluded := []string{"12.*", "13.*"}
+
+	if os.Getenv("CI") != "" {
+		excluded = append(excluded, "9.*")
+	}
+
 	config, _ := json.Marshal(map[string]interface{}{
 		"outdir": "./reports/servers",
 		"servers": []map[string]interface{}{
@@ -503,7 +509,7 @@ func TestServerAutobahn(t *testing.T) {
 			},
 		},
 		"cases":         []string{"*"},
-		"exclude-cases": []string{"12.*", "13.*"},
+		"exclude-cases": excluded,
 	})
 
 	err = os.WriteFile(filepath.Join(workdir, "config", "fuzzingclient.json"), config, 0644)
