@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -532,17 +534,56 @@ func TestServerAutobahn(t *testing.T) {
 	err = cmd.Start()
 	RequireNil(t, err)
 
+	var waiting sync.Map
+
 	for output.Scan() {
 		// TODO detect test case and check report json
 		if strings.HasPrefix(output.Text(), "Running test case ID") {
 			testcase := strings.Split(output.Text(), " ")[4]
-			t.Run(testcase, func(t *testing.T) {
-			})
+			go func(testcase string) {
+				rc := make(chan bool, 1)
+				waiting.Store(testcase, rc)
+				t.Run(testcase, func(t *testing.T) {
+					if !<-rc {
+						t.Fail()
+					}
+				})
+				rc <- true
+			}(testcase)
 		}
 	}
 
 	err = cmd.Wait()
 	RequireNil(t, err)
+
+	fd, err := os.Open(fmt.Sprintf("%s/reports/servers/index.json", workdir))
+	RequireNil(t, err)
+
+	data, err := io.ReadAll(fd)
+	RequireNil(t, err)
+
+	var report testResults
+
+	err = json.Unmarshal(data, &report)
+
+	for testcase, results := range report.UnknownServer {
+		waiter, _ := waiting.Load(testcase)
+		if results.Behavior == "FAILED" || results.BehaviorClose == "FAILED" {
+			waiter.(chan bool) <- false
+		} else {
+			waiter.(chan bool) <- true
+		}
+		<-waiter.(chan bool)
+	}
+}
+
+type testResults struct {
+	UnknownServer map[string]testCase `json:"UnknownServer"`
+}
+
+type testCase struct {
+	Behavior      string `json:"behavior"`
+	BehaviorClose string `json:"behaviorClose"`
 }
 
 func timeout[T any](ch chan T, after time.Duration) error {
