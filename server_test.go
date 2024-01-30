@@ -475,6 +475,9 @@ func TestServerAutobahn(t *testing.T) {
 		OnText: func(conn *Conn, msg string) {
 			conn.WriteText(msg)
 		},
+		OnDisconnect: func(conn *Conn, err error) {
+			fmt.Println("closed:", err)
+		},
 		OnError: func(err error, fatal bool) {
 			fmt.Println(err)
 			RequireFalse(t, fatal)
