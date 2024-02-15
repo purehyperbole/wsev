@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -428,6 +429,10 @@ func (l *listener) purgeIdle() {
 }
 
 func (l *listener) error(err error, isFatal bool) {
+	if err.Error() == "no such file or directory" {
+		panic(err)
+	}
+
 	if l.handler.OnError != nil {
 		l.handler.OnError(err, isFatal)
 	}
@@ -463,7 +468,9 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	// tell epoll we don't need to monitor this connection anymore
 	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_DEL, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
 	if err != nil {
-		l.error(err, false)
+		if !errors.Is(err, os.ErrNotExist) {
+			l.error(err, false)
+		}
 	}
 
 	err = conn.Close()
