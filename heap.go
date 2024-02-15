@@ -1,7 +1,5 @@
 package wsev
 
-import "fmt"
-
 type entry struct {
 	key   int64
 	value *Conn
@@ -88,8 +86,6 @@ func (h *heap) popIf(cond int64) *Conn {
 	if h.isEmpty() || (*h)[0].key > cond {
 		return nil
 	}
-
-	fmt.Println("removing connection lastUpdated:", (*h)[0].key, "matched:", cond)
 
 	return h.pop()
 }

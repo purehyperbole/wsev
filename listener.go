@@ -127,7 +127,6 @@ func (l *listener) handleEvents() {
 			}
 
 			l.error(err, true)
-			fmt.Println("EXITING", err)
 			return
 		}
 
@@ -429,10 +428,6 @@ func (l *listener) purgeIdle() {
 }
 
 func (l *listener) error(err error, isFatal bool) {
-	if err.Error() == "no such file or directory" {
-		panic(err)
-	}
-
 	if l.handler.OnError != nil {
 		l.handler.OnError(err, isFatal)
 	}
