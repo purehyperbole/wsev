@@ -91,11 +91,11 @@ func (h *heap) popIf(cond int64) *Conn {
 }
 
 func (h *heap) swap(a, b int) {
-	(*h)[a], (*h)[b] = (*h)[b], (*h)[a]
-
 	// swap the index values on the connection
 	(*h)[a].value.h = b
 	(*h)[b].value.h = a
+
+	(*h)[a], (*h)[b] = (*h)[b], (*h)[a]
 }
 
 func (h *heap) isEmpty() bool {
