@@ -16,7 +16,7 @@ func (h *heap) push(key int64, value *Conn) {
 		value: value,
 	})
 
-	for h.hasParent(current) {
+	for {
 		parent := parentIndex(current)
 
 		if (*h)[parent].key <= key {
@@ -26,6 +26,31 @@ func (h *heap) push(key int64, value *Conn) {
 		h.swap(current, parent)
 		current = parent
 	}
+}
+
+func (h *heap) delete(value *Conn) {
+	current := value.h
+	h.swap(current, len(*h)-1)
+
+	*h = (*h)[:len(*h)-1]
+
+	for h.hasLeftChild(current) {
+		smallest := leftChildIndex(current)
+
+		if h.hasRightChild(current) && (*h)[rightChildIndex(current)].key < (*h)[smallest].key {
+			smallest = rightChildIndex(current)
+		}
+
+		if (*h)[current].key < (*h)[smallest].key {
+			break
+		} else {
+			h.swap(current, smallest)
+		}
+
+		current = smallest
+	}
+
+	value.h = HeapRemoved
 }
 
 func (h *heap) decrease(value *Conn, key int64) {
@@ -77,7 +102,7 @@ func (h *heap) pop() *Conn {
 		current = smallest
 	}
 
-	value.h = -1
+	value.h = HeapRemoved
 
 	return value
 }

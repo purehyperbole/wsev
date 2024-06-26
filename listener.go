@@ -479,6 +479,14 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 		return
 	}
 
+	if conn.h > HeapRemoved {
+		// if this hasn't been removed from the heap
+		// remove it
+		l.timermu.Lock()
+		l.timerheap.delete(conn)
+		l.timermu.Unlock()
+	}
+
 	if l.handler.OnDisconnect != nil {
 		l.handler.OnDisconnect(conn, derr)
 	}
