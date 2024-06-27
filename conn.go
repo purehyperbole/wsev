@@ -265,8 +265,8 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 			defer func() {
 				// return the buffer and remove it from this connection
 				if c.b != nil {
-					c.p.Put(c.b)
 					c.b.b.Reset(nil)
+					c.p.Put(c.b)
 					c.b = nil
 				}
 
