@@ -178,7 +178,7 @@ func (l *listener) handleEvents() {
 }
 
 func (l *listener) read(fd int32, conn *Conn) error {
-	op, err := l.assembleFrame(int(fd), conn)
+	op, err := l.assembleFrame(conn)
 	if err != nil {
 		ce, ok := err.(*closeError)
 		if !ok {
@@ -250,7 +250,7 @@ func (l *listener) read(fd int32, conn *Conn) error {
 }
 
 // reads a frame and outputs its payload into a frame, text or binary buffer
-func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
+func (l *listener) assembleFrame(conn *Conn) (opCode, error) {
 	l.framebuf.Reset()
 
 	err := conn.SetReadDeadline(time.Now().Add(l.readDeadline))
@@ -502,7 +502,7 @@ func (l *listener) kill(fd int) {
 		}
 	}
 
-	unix.Shutdown(fd, unix.SHUT_RDWR)
+	// unix.Shutdown(fd, unix.SHUT_RDWR)
 }
 
 func (l *listener) discard(length int64, cerr error) error {
