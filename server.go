@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -153,13 +154,7 @@ func (s *Server) Serve(port int) error {
 				return
 			}
 
-			cfd, err := connectionFd(conn)
-			if err != nil {
-				s.error(fmt.Errorf("failed to get ws file descriptor: %w", err), false)
-				return
-			}
-
-			l.register(cfd, conn)
+			l.register(connectionFd(conn), conn)
 		})
 
 		l.http = http.Server{
@@ -271,7 +266,7 @@ func acceptWs(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
 
 		if o.Host != r.Host {
 			w.WriteHeader(http.StatusForbidden)
-			return nil, errors.New("Origin header does not match hostname")
+			return nil, errors.New("origin header does not match hostname")
 		}
 	}
 
@@ -298,7 +293,12 @@ func acceptWs(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
 	return conn, conn.SetDeadline(time.Time{})
 }
 
-func connectionFd(conn net.Conn) (int, error) {
-	fd, err := conn.(*net.TCPConn).File()
-	return int(fd.Fd()), err
+func connectionFd(conn net.Conn) int {
+	// get the poll file descriptor via reflect
+	// os.File().Fd() doesn't return this sadly
+	tcpConn := reflect.Indirect(reflect.ValueOf(conn)).FieldByName("conn")
+	fdVal := tcpConn.FieldByName("fd")
+	pfdVal := reflect.Indirect(fdVal).FieldByName("pfd")
+
+	return int(pfdVal.FieldByName("Sysfd").Int())
 }

@@ -177,7 +177,7 @@ func (l *listener) handleEvents() {
 }
 
 func (l *listener) read(fd int32, conn *Conn) error {
-	op, err := l.assembleFrame(int(fd), conn)
+	op, err := l.assembleFrame(conn)
 	if err != nil {
 		ce, ok := err.(*closeError)
 		if !ok {
@@ -249,7 +249,7 @@ func (l *listener) read(fd int32, conn *Conn) error {
 }
 
 // reads a frame and outputs its payload into a frame, text or binary buffer
-func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
+func (l *listener) assembleFrame(conn *Conn) (opCode, error) {
 	l.framebuf.Reset()
 
 	err := conn.SetReadDeadline(time.Now().Add(l.readDeadline))
@@ -271,25 +271,25 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 	// epoll waking us up again to read the remaining bytes
 	if h.Rsv > 0 {
 		// we don't support rsv bits > 0
-		return 0, l.discard(conn, h.Length, ErrInvalidRSVBits)
+		return 0, l.discard(h.Length, ErrInvalidRSVBits)
 	}
 
 	if h.isReserved() {
 		// reserved op code used
-		return 0, l.discard(conn, h.Length, ErrInvalidOpCode)
+		return 0, l.discard(h.Length, ErrInvalidOpCode)
 	}
 
 	if h.isControl() {
 		if !h.Fin {
 			// control frames cannot be fragmented
-			return 0, l.discard(conn, h.Length, ErrInvalidContinuation)
+			return 0, l.discard(h.Length, ErrInvalidContinuation)
 		}
 		if h.Length > 125 {
 			// control frames cannot have payloads over 125 bytes
-			return 0, l.discard(conn, h.Length, ErrInvalidControlLength)
+			return 0, l.discard(h.Length, ErrInvalidControlLength)
 		}
 		if h.OpCode == opClose && h.Length == 1 {
-			return 0, l.discard(conn, h.Length, ErrInvalidCloseReason)
+			return 0, l.discard(h.Length, ErrInvalidCloseReason)
 		}
 	}
 
@@ -304,7 +304,7 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 			// if this is a text or binary message and not final
 			// and we coudln't set the op code for a continuation
 			// due to an existing cotinuation, fail
-			return 0, l.discard(conn, h.Length, ErrInvalidContinuation)
+			return 0, l.discard(h.Length, ErrInvalidContinuation)
 		}
 
 		if !h.Fin {
@@ -321,7 +321,7 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 			// we've received a continuation frame
 			// that was not started with a text or
 			// binary op frame, so fail
-			return 0, l.discard(conn, h.Length, ErrInvalidContinuation)
+			return 0, l.discard(h.Length, ErrInvalidContinuation)
 		} else {
 			// select the message buffer to write the continuation
 			// payload into
@@ -492,7 +492,7 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	}
 }
 
-func (l *listener) discard(conn *Conn, length int64, cerr error) error {
+func (l *listener) discard(length int64, cerr error) error {
 	_, err := io.CopyN(io.Discard, l.readbuf, length)
 	if err != nil {
 		return err
