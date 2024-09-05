@@ -271,7 +271,7 @@ func acceptWs(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
 
 		if o.Host != r.Host {
 			w.WriteHeader(http.StatusForbidden)
-			return nil, errors.New("Origin header does not match hostname")
+			return nil, errors.New("origin header does not match hostname")
 		}
 	}
 

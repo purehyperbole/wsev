@@ -142,6 +142,7 @@ func (l *listener) handleEvents() {
 		for i := 0; i < ec; i++ {
 			conn, ok := l.conns.Load(int(events[i].Fd))
 			if !ok {
+				l.kill(int(events[i].Fd))
 				continue
 			}
 
@@ -271,25 +272,25 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 	// epoll waking us up again to read the remaining bytes
 	if h.Rsv > 0 {
 		// we don't support rsv bits > 0
-		return 0, l.discard(conn, h.Length, ErrInvalidRSVBits)
+		return 0, l.discard(h.Length, ErrInvalidRSVBits)
 	}
 
 	if h.isReserved() {
 		// reserved op code used
-		return 0, l.discard(conn, h.Length, ErrInvalidOpCode)
+		return 0, l.discard(h.Length, ErrInvalidOpCode)
 	}
 
 	if h.isControl() {
 		if !h.Fin {
 			// control frames cannot be fragmented
-			return 0, l.discard(conn, h.Length, ErrInvalidContinuation)
+			return 0, l.discard(h.Length, ErrInvalidContinuation)
 		}
 		if h.Length > 125 {
 			// control frames cannot have payloads over 125 bytes
-			return 0, l.discard(conn, h.Length, ErrInvalidControlLength)
+			return 0, l.discard(h.Length, ErrInvalidControlLength)
 		}
 		if h.OpCode == opClose && h.Length == 1 {
-			return 0, l.discard(conn, h.Length, ErrInvalidCloseReason)
+			return 0, l.discard(h.Length, ErrInvalidCloseReason)
 		}
 	}
 
@@ -304,7 +305,7 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 			// if this is a text or binary message and not final
 			// and we coudln't set the op code for a continuation
 			// due to an existing cotinuation, fail
-			return 0, l.discard(conn, h.Length, ErrInvalidContinuation)
+			return 0, l.discard(h.Length, ErrInvalidContinuation)
 		}
 
 		if !h.Fin {
@@ -321,7 +322,7 @@ func (l *listener) assembleFrame(fd int, conn *Conn) (opCode, error) {
 			// we've received a continuation frame
 			// that was not started with a text or
 			// binary op frame, so fail
-			return 0, l.discard(conn, h.Length, ErrInvalidContinuation)
+			return 0, l.discard(h.Length, ErrInvalidContinuation)
 		} else {
 			// select the message buffer to write the continuation
 			// payload into
@@ -492,7 +493,19 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	}
 }
 
-func (l *listener) discard(conn *Conn, length int64, cerr error) error {
+func (l *listener) kill(fd int) {
+	// tell epoll we don't need to monitor this connection anymore
+	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_DEL, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			l.error(err, false)
+		}
+	}
+
+	unix.Shutdown(fd, unix.SHUT_RDWR)
+}
+
+func (l *listener) discard(length int64, cerr error) error {
 	_, err := io.CopyN(io.Discard, l.readbuf, length)
 	if err != nil {
 		return err

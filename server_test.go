@@ -572,6 +572,7 @@ func TestServerAutobahn(t *testing.T) {
 	var report testResults
 
 	err = json.Unmarshal(data, &report)
+	RequireNil(t, err)
 
 	for testcase, results := range report.UnknownServer {
 		waiter, _ := waiting.Load(testcase)

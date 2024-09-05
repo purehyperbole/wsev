@@ -111,12 +111,6 @@ func newCodec() *codec {
 	}
 }
 
-func newReadCodec() *codec {
-	return &codec{
-		rbts: make([]byte, 2, maxHeaderSize-2),
-	}
-}
-
 func newWriteCodec() *codec {
 	return &codec{
 		wbts: make([]byte, maxHeaderSize),
