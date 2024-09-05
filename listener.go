@@ -142,7 +142,6 @@ func (l *listener) handleEvents() {
 		for i := 0; i < ec; i++ {
 			conn, ok := l.conns.Load(int(events[i].Fd))
 			if !ok {
-				l.kill(int(events[i].Fd))
 				continue
 			}
 
@@ -491,18 +490,6 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	if l.handler.OnDisconnect != nil {
 		l.handler.OnDisconnect(conn, derr)
 	}
-}
-
-func (l *listener) kill(fd int) {
-	// tell epoll we don't need to monitor this connection anymore
-	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_DEL, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			l.error(err, false)
-		}
-	}
-
-	// unix.Shutdown(fd, unix.SHUT_RDWR)
 }
 
 func (l *listener) discard(length int64, cerr error) error {
