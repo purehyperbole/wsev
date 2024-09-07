@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"sync"
 	"syscall"
@@ -84,7 +83,7 @@ type listener struct {
 	timerheap     heap
 	timermu       sync.Mutex
 	conns         sync.Map
-	http          http.Server
+	socket        net.Listener
 	_p1           [8]uint64
 	readDeadline  time.Duration
 	flushDeadline time.Duration
@@ -102,12 +101,10 @@ func newListener(epollFd int, handler *Handler, bufpool *sync.Pool, readDeadline
 		bufpool:       bufpool,
 		codec:         newCodec(),
 		readbuf:       bufio.NewReaderSize(nil, DefaultBufferSize),
-		framebuf:      bytes.NewBuffer(make([]byte, DefaultBufferSize)),
-		messagebuf:    bytes.NewBuffer(make([]byte, DefaultBufferSize)),
+		framebuf:      bytes.NewBuffer(make([]byte, 0, DefaultBufferSize)),
+		messagebuf:    bytes.NewBuffer(make([]byte, 0, DefaultBufferSize)),
 		handler:       handler,
 	}
-
-	l.messagebuf.Reset()
 
 	go l.handleEvents()
 
@@ -502,7 +499,7 @@ func (l *listener) discard(length int64, cerr error) error {
 }
 
 func (l *listener) shutdown() error {
-	err := l.http.Close()
+	err := l.socket.Close()
 	if err != nil {
 		return err
 	}

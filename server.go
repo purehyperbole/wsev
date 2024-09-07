@@ -137,7 +137,7 @@ func (s *Server) Serve(port int) error {
 			return err
 		}
 
-		l := newListener(
+		s.listeners[i] = newListener(
 			fd,
 			s.handler,
 			&s.wbuffers,
@@ -146,21 +146,11 @@ func (s *Server) Serve(port int) error {
 			s.writeBufferSize,
 		)
 
-		mux := http.NewServeMux()
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			conn, err := acceptWs(w, r)
-			if err != nil {
-				s.error(fmt.Errorf("failed to upgrade ws: %w", err), false)
-				return
-			}
+		/*
 
-			l.register(connectionFd(conn), conn)
-		})
 
-		l.http = http.Server{
-			Addr:    fmt.Sprintf(":%d", port),
-			Handler: mux,
-		}
+
+		 */
 
 		lc := net.ListenConfig{
 			Control: func(network, address string, c syscall.RawConn) error {
@@ -179,17 +169,26 @@ func (s *Server) Serve(port int) error {
 			},
 		}
 
-		ln, err := lc.Listen(context.Background(), "tcp", l.http.Addr)
+		s.listeners[i].socket, err = lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
 			return err
 		}
 
-		s.listeners[i] = l
-
 		go func(pid int) {
-			err = s.listeners[pid].http.Serve(ln)
-			if err != nil {
-				s.error(err, true)
+			for {
+				conn, err := s.listeners[pid].socket.Accept()
+				if err != nil {
+					s.error(err, true)
+					continue
+				}
+
+				err = acceptWs(conn)
+				if err != nil {
+					s.error(fmt.Errorf("failed to upgrade ws: %w", err), false)
+					continue
+				}
+
+				s.listeners[pid].register(connectionFd(conn), conn)
 			}
 		}(i)
 	}
@@ -215,58 +214,88 @@ func (s *Server) error(err error, isFatal bool) {
 	}
 }
 
-func acceptWs(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
+func acceptWs(conn net.Conn) error {
 	// https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.1
+	b := bufio.NewReader(conn)
+	r, err := http.ReadRequest(b)
+	if err != nil {
+		return err
+	}
+
 	h := r.Header
 
 	// check the client is running at least HTTP/1.1
 	if !r.ProtoAtLeast(1, 1) {
-		w.WriteHeader(http.StatusUpgradeRequired)
-		return nil, errors.New("unsupported client http version")
+		return writeHeader(
+			conn,
+			http.StatusUpgradeRequired,
+			errors.New("unsupported client http version"),
+		)
 	}
 
 	// check this is a get request
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusUpgradeRequired)
-		return nil, errors.New("unsupported http method")
+		return writeHeader(
+			conn,
+			http.StatusUpgradeRequired,
+			errors.New("unsupported http method"),
+		)
 	}
 
 	// check request header contains the 'Connection: Upgrade' and 'Upgrade: websocket' headers
 	if !strings.EqualFold(h.Get("Connection"), "upgrade") && !strings.EqualFold(h.Get("Upgrade"), "websocket") {
-		w.WriteHeader(http.StatusUpgradeRequired)
-		return nil, errors.New("invalid upgrade headers")
+		return writeHeader(
+			conn,
+			http.StatusUpgradeRequired,
+			errors.New("invalid upgrade headers"),
+		)
 	}
 
 	// validate Sec-WebSocket-Key header
 	socketKey, err := enc.DecodeString(h.Get("Sec-WebSocket-Key"))
 	if err != nil {
-		w.WriteHeader(http.StatusUpgradeRequired)
-		return nil, errors.New("invalid Sec-Websocket-Key base64")
+		writeHeader(
+			conn,
+			http.StatusUpgradeRequired,
+			errors.New("invalid Sec-Websocket-Key base64"),
+		)
 	}
 
 	// check Sec-WebSocket-Key is at least 16 bytes
 	if len(socketKey) != 16 {
-		w.WriteHeader(http.StatusUpgradeRequired)
-		return nil, errors.New("invalid Sec-Websocket-Key base64 length")
+		return writeHeader(
+			conn,
+			http.StatusUpgradeRequired,
+			errors.New("invalid Sec-Websocket-Key base64 length"),
+		)
 	}
 
 	// check the client is running websocket version 13
 	if h.Get("Sec-WebSocket-Version") != "13" {
-		w.WriteHeader(http.StatusUpgradeRequired)
-		return nil, errors.New("invalid Sec-Websocket-Key base64 length")
+		return writeHeader(
+			conn,
+			http.StatusUpgradeRequired,
+			errors.New("invalid Sec-Websocket-Key base64 length"),
+		)
 	}
 
 	origin := h.Get("Origin")
 	if origin != "" {
 		o, err := url.Parse(origin)
 		if err != nil {
-			w.WriteHeader(http.StatusForbidden)
-			return nil, errors.New("invalid Origin header")
+			return writeHeader(
+				conn,
+				http.StatusForbidden,
+				errors.New("invalid Origin header"),
+			)
 		}
 
 		if o.Host != r.Host {
-			w.WriteHeader(http.StatusForbidden)
-			return nil, errors.New("origin header does not match hostname")
+			return writeHeader(
+				conn,
+				http.StatusForbidden,
+				errors.New("origin header does not match hostname"),
+			)
 		}
 	}
 
@@ -277,20 +306,18 @@ func acceptWs(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
 	sh.Write([]byte(h.Get("Sec-WebSocket-Key")))
 	sh.Write(wsAcceptID)
 
-	// write headers
-	w.Header().Add("Connection", "Upgrade")
-	w.Header().Add("Upgrade", "websocket")
-	w.Header().Add("Sec-WebSocket-Accept", enc.EncodeToString(sh.Sum(nil)))
-	w.WriteHeader(http.StatusSwitchingProtocols)
+	// write response
+	_, err = fmt.Fprintf(
+		conn,
+		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
+		enc.EncodeToString(sh.Sum(nil)),
+	)
 
-	// hijack connection
-	conn, _, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return nil, err
+		return err
 	}
 
-	return conn, conn.SetDeadline(time.Time{})
+	return conn.SetDeadline(time.Time{})
 }
 
 func connectionFd(conn net.Conn) int {
@@ -301,4 +328,13 @@ func connectionFd(conn net.Conn) int {
 	pfdVal := reflect.Indirect(fdVal).FieldByName("pfd")
 
 	return int(pfdVal.FieldByName("Sysfd").Int())
+}
+
+func writeHeader(conn net.Conn, status int, err error) error {
+	_, _ = fmt.Fprintf(
+		conn,
+		"HTTP/1.1 %d Switching Protocols\r\n\r\n",
+		status,
+	)
+	return err
 }
