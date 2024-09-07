@@ -27,7 +27,7 @@ var (
 
 const (
 	DefaultBufferSize          = 1 << 14
-	DefaultBufferFlushDeadline = time.Second
+	DefaultBufferFlushDeadline = time.Millisecond * 10
 	DefaultReadDeadline        = time.Second
 )
 
@@ -146,12 +146,6 @@ func (s *Server) Serve(port int) error {
 			s.writeBufferSize,
 		)
 
-		/*
-
-
-
-		 */
-
 		lc := net.ListenConfig{
 			Control: func(network, address string, c syscall.RawConn) error {
 				var serr error
@@ -182,12 +176,6 @@ func (s *Server) Serve(port int) error {
 					continue
 				}
 
-				err = acceptWs(conn)
-				if err != nil {
-					s.error(fmt.Errorf("failed to upgrade ws: %w", err), false)
-					continue
-				}
-
 				s.listeners[pid].register(connectionFd(conn), conn)
 			}
 		}(i)
@@ -214,10 +202,10 @@ func (s *Server) error(err error, isFatal bool) {
 	}
 }
 
-func acceptWs(conn net.Conn) error {
+func acceptWs(conn net.Conn, buf *bufio.Reader) error {
 	// https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.1
-	b := bufio.NewReader(conn)
-	r, err := http.ReadRequest(b)
+
+	r, err := http.ReadRequest(buf)
 	if err != nil {
 		return err
 	}

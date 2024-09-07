@@ -152,6 +152,20 @@ func (l *listener) handleEvents() {
 
 			// read until there is no more data in the read buffer
 			for {
+				if cn.upgrade() {
+					// upgrade the connection and write upgrade negotiation
+					// response directly to underlying connection
+					err = acceptWs(cn.Conn, l.readbuf)
+					if err != nil {
+						l.disconnect(int(events[i].Fd), cn, err)
+						break
+					}
+
+					if l.handler.OnConnect != nil {
+						l.handler.OnConnect(cn)
+					}
+				}
+
 				err = l.read(events[i].Fd, cn)
 				if err != nil {
 					l.disconnect(int(events[i].Fd), cn, err)
@@ -384,10 +398,6 @@ func (l *listener) register(fd int, conn net.Conn) {
 		},
 	)
 
-	if l.handler.OnConnect != nil {
-		l.handler.OnConnect(bc)
-	}
-
 	l.timermu.Lock()
 	l.timerheap.push(time.Now().Unix(), bc)
 	l.timermu.Unlock()
@@ -405,7 +415,7 @@ func (l *listener) purgeIdle() {
 	// dont check on every iteration
 	l.counter++
 
-	if l.counter%10 != 0 {
+	if l.counter%100 != 0 {
 		return
 	}
 
