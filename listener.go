@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"sync"
 	"syscall"
@@ -84,7 +83,7 @@ type listener struct {
 	timerheap     heap
 	timermu       sync.Mutex
 	conns         sync.Map
-	http          http.Server
+	socket        net.Listener
 	_p1           [8]uint64
 	readDeadline  time.Duration
 	flushDeadline time.Duration
@@ -102,12 +101,10 @@ func newListener(epollFd int, handler *Handler, bufpool *sync.Pool, readDeadline
 		bufpool:       bufpool,
 		codec:         newCodec(),
 		readbuf:       bufio.NewReaderSize(nil, DefaultBufferSize),
-		framebuf:      bytes.NewBuffer(make([]byte, DefaultBufferSize)),
-		messagebuf:    bytes.NewBuffer(make([]byte, DefaultBufferSize)),
+		framebuf:      bytes.NewBuffer(make([]byte, 0, DefaultBufferSize)),
+		messagebuf:    bytes.NewBuffer(make([]byte, 0, DefaultBufferSize)),
 		handler:       handler,
 	}
-
-	l.messagebuf.Reset()
 
 	go l.handleEvents()
 
@@ -155,6 +152,20 @@ func (l *listener) handleEvents() {
 
 			// read until there is no more data in the read buffer
 			for {
+				if cn.upgrade() {
+					// upgrade the connection and write upgrade negotiation
+					// response directly to underlying connection
+					err = acceptWs(cn.Conn, l.readbuf)
+					if err != nil {
+						l.disconnect(int(events[i].Fd), cn, err)
+						break
+					}
+
+					if l.handler.OnConnect != nil {
+						l.handler.OnConnect(cn)
+					}
+				}
+
 				err = l.read(events[i].Fd, cn)
 				if err != nil {
 					l.disconnect(int(events[i].Fd), cn, err)
@@ -387,10 +398,6 @@ func (l *listener) register(fd int, conn net.Conn) {
 		},
 	)
 
-	if l.handler.OnConnect != nil {
-		l.handler.OnConnect(bc)
-	}
-
 	l.timermu.Lock()
 	l.timerheap.push(time.Now().Unix(), bc)
 	l.timermu.Unlock()
@@ -408,7 +415,7 @@ func (l *listener) purgeIdle() {
 	// dont check on every iteration
 	l.counter++
 
-	if l.counter%10 != 0 {
+	if l.counter%100 != 0 {
 		return
 	}
 
@@ -502,7 +509,7 @@ func (l *listener) discard(length int64, cerr error) error {
 }
 
 func (l *listener) shutdown() error {
-	err := l.http.Close()
+	err := l.socket.Close()
 	if err != nil {
 		return err
 	}

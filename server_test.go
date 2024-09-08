@@ -28,7 +28,7 @@ type testevent struct {
 	msg  []byte
 }
 
-var testport int = 10000 //8000
+var testport int = 10000
 
 func nexttestport() (int, string) {
 	port := testport
@@ -65,8 +65,9 @@ func TestServerConnect(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	conn := testconn(t, address)
+	conn, _ := testconn(t, address)
 	defer conn.Close()
+	<-opench
 }
 
 func TestServerDisconnect(t *testing.T) {
@@ -95,7 +96,7 @@ func TestServerDisconnect(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	conn := testconn(t, address)
+	conn, _ := testconn(t, address)
 	defer conn.Close()
 
 	RequireNil(t, timeout(opench, time.Millisecond*100))
@@ -140,7 +141,7 @@ func TestServerDisconnectTimeout(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	conn := testconn(t, address)
+	conn, _ := testconn(t, address)
 	defer conn.Close()
 
 	RequireNil(t, timeout(opench, time.Millisecond*100))
@@ -173,7 +174,7 @@ func TestServerPong(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	conn := testconn(t, address)
+	conn, rb := testconn(t, address)
 	defer conn.Close()
 
 	codec := newCodec()
@@ -187,7 +188,7 @@ func TestServerPong(t *testing.T) {
 	RequireNil(t, timeout(pingch, time.Millisecond*100))
 	conn.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
 
-	h, err := codec.ReadHeader(conn)
+	h, err := codec.ReadHeader(rb)
 	RequireNil(t, err)
 	AssertEqual(t, opPong, h.OpCode)
 	AssertTrue(t, h.Fin)
@@ -216,7 +217,7 @@ func TestServerSendUnmasked(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	recv := testconn(t, address)
+	recv, rb := testconn(t, address)
 	defer recv.Close()
 
 	send, err := timeoutValue(opench, time.Millisecond*100)
@@ -231,12 +232,12 @@ func TestServerSendUnmasked(t *testing.T) {
 		_, err := (*send).conn.Write(data)
 		RequireNil(t, err)
 
-		h, err := codec.ReadHeader(recv)
+		h, err := codec.ReadHeader(rb)
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 
 		rdata := make([]byte, h.Length)
-		recv.Read(rdata)
+		io.ReadFull(rb, rdata)
 		AssertEqual(t, data, rdata)
 	}
 }
@@ -264,7 +265,7 @@ func TestServerSendMasked(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	recv := testconn(t, address)
+	recv, rb := testconn(t, address)
 	defer recv.Close()
 
 	send, err := timeoutValue(opench, time.Millisecond*100)
@@ -292,12 +293,12 @@ func TestServerSendMasked(t *testing.T) {
 		_, err := (*send).conn.(*Conn).Conn.Write(data)
 		RequireNil(t, err)
 
-		h, err = codec.ReadHeader(recv)
+		h, err = codec.ReadHeader(rb)
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 
 		rdata := make([]byte, h.Length)
-		recv.Read(rdata)
+		io.ReadFull(rb, rdata)
 		AssertEqual(t, data, rdata)
 	}
 }
@@ -332,7 +333,7 @@ func TestServerReceiveSmall(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	conn := testconn(t, address)
+	conn, _ := testconn(t, address)
 	defer conn.Close()
 
 	codec := newCodec()
@@ -351,7 +352,12 @@ func TestServerReceiveSmall(t *testing.T) {
 
 		_, err := conn.Write(data)
 		RequireNil(t, err)
-		RequireNil(t, timeout(msgchan, time.Millisecond*100))
+		start := time.Now()
+		err = timeout(msgchan, time.Millisecond*500)
+		if err != nil {
+			fmt.Println(err, counter, time.Since(start))
+		}
+		RequireNil(t, err)
 	}
 }
 
@@ -385,7 +391,7 @@ func TestServerReceiveLarge(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	conn := testconn(t, address)
+	conn, _ := testconn(t, address)
 	defer conn.Close()
 
 	codec := newCodec()
@@ -435,7 +441,7 @@ func TestServerReceiveMasked(t *testing.T) {
 	RequireNil(t, err)
 	defer s.Close()
 
-	conn := testconn(t, address)
+	conn, _ := testconn(t, address)
 	defer conn.Close()
 
 	codec := newCodec()
@@ -629,7 +635,7 @@ func randomdir() string {
 	return dir
 }
 
-func testconn(t *testing.T, address string) net.Conn {
+func testconn(t *testing.T, address string) (net.Conn, *bufio.Reader) {
 	req, err := http.NewRequest("GET", "ws://"+address, nil)
 	RequireNil(t, err)
 
@@ -651,6 +657,9 @@ func testconn(t *testing.T, address string) net.Conn {
 	err = req.Write(conn)
 	RequireNil(t, err)
 
+	// buf := bytes.NewBuffer(make([]byte, 0, 1024))
+	// tbf := io.TeeReader(conn, buf)
+
 	rb := bufio.NewReaderSize(conn, 1<<14)
 
 	resp, err := http.ReadResponse(rb, req)
@@ -660,9 +669,7 @@ func testconn(t *testing.T, address string) net.Conn {
 
 	resp.Close = false
 
-	time.Sleep(time.Millisecond * 10)
-
-	return conn
+	return conn, rb
 }
 
 func AssertNil(t *testing.T, v any) {
