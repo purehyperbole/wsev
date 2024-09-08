@@ -27,7 +27,7 @@ var (
 
 const (
 	DefaultBufferSize          = 1 << 14
-	DefaultBufferFlushDeadline = time.Millisecond * 10
+	DefaultBufferFlushDeadline = time.Millisecond * 50
 	DefaultReadDeadline        = time.Second
 )
 
@@ -204,7 +204,6 @@ func (s *Server) error(err error, isFatal bool) {
 
 func acceptWs(conn net.Conn, buf *bufio.Reader) error {
 	// https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.1
-
 	r, err := http.ReadRequest(buf)
 	if err != nil {
 		return err
