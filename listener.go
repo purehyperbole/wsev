@@ -404,7 +404,13 @@ func (l *listener) register(fd int, conn net.Conn) {
 
 	l.conns.Store(fd, bc)
 
-	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
+	err := unix.SetNonblock(fd, true)
+	if err != nil {
+		l.error(fmt.Errorf("failed to set non-blocking socket: %w", err), false)
+		return
+	}
+
+	err = unix.EpollCtl(l.fd, syscall.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
 	if err != nil {
 		l.error(fmt.Errorf("failed to add conn fd to epoll: %w", err), false)
 		return

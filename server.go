@@ -96,6 +96,7 @@ type Handler struct {
 }
 
 type Server struct {
+	rbuffers            sync.Pool
 	wbuffers            sync.Pool
 	handler             *Handler
 	listeners           []*listener
@@ -109,6 +110,13 @@ func New(handler *Handler, opts ...option) *Server {
 	s := &Server{
 		handler:   handler,
 		listeners: make([]*listener, runtime.GOMAXPROCS(0)),
+		rbuffers: sync.Pool{
+			New: func() any {
+				return &rbuf{
+					b: bufio.NewReaderSize(nil, DefaultBufferSize),
+				}
+			},
+		},
 		wbuffers: sync.Pool{
 			New: func() any {
 				return &wbuf{

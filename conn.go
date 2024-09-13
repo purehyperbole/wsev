@@ -16,6 +16,11 @@ const (
 	HeapUnassigned = -2
 )
 
+// holds a read buffer
+type rbuf struct {
+	b *bufio.Reader
+}
+
 // holds a write buffer and codec
 type wbuf struct {
 	b *bufio.Writer
