@@ -46,6 +46,9 @@ func TestServerConnect(t *testing.T) {
 
 	s := New(
 		&Handler{
+			OnError: func(err error, fatal bool) {
+				//fmt.Println(err)
+			},
 			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
@@ -694,6 +697,7 @@ func AssertNil(t *testing.T, v any) {
 
 func RequireNil(t *testing.T, v any) {
 	if v != nil {
+		fmt.Println(v)
 		t.FailNow()
 	}
 }

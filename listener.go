@@ -134,6 +134,8 @@ func (l *listener) handleEvents() {
 		now := time.Now().Unix()
 
 		for i := 0; i < ec; i++ {
+			fmt.Println("GOT EPOLL EVENT FOR CONNECTION")
+
 			conn, ok := l.conns.Load(int(events[i].Fd))
 			if !ok {
 				continue
@@ -155,6 +157,7 @@ func (l *listener) handleEvents() {
 				// buffer data from the underlying connection
 				err = cn.buffer()
 				if err != nil {
+					fmt.Println(err)
 					if errors.Is(err, syscall.EAGAIN) {
 						// there's no data left to read
 						break

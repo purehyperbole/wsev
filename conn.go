@@ -335,6 +335,10 @@ func (c *Conn) acquireReadBuffer() *rbuf {
 }
 
 func (c *Conn) releaseReadBuffer() {
+	if c.readbuf != nil {
+		return
+	}
+
 	c.readbuf.f = c.readbuf.f[:0]
 	c.readbuf.h.reset()
 	c.readbuf.m.Reset()

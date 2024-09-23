@@ -125,7 +125,7 @@ func New(handler *Handler, opts ...option) *Server {
 	s.rbuffers = sync.Pool{
 		New: func() any {
 			return &rbuf{
-				f: make([]byte, s.readBufferSize),
+				f: make([]byte, 0, s.readBufferSize),
 				m: bytes.NewBuffer(make([]byte, 0, s.readBufferSize)),
 			}
 		},
@@ -319,7 +319,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 
 	// write response
 	_, err = fmt.Fprintf(
-		conn,
+		conn.Conn,
 		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
 		enc.EncodeToString(sh.Sum(nil)),
 	)
@@ -328,7 +328,9 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 		return err
 	}
 
-	return conn.SetDeadline(time.Time{})
+	buf.f = buf.f[:0]
+
+	return nil
 }
 
 func connectionFd(conn net.Conn) int {
