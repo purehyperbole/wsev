@@ -188,7 +188,12 @@ func TestServerPong(t *testing.T) {
 	RequireNil(t, timeout(pingch, time.Millisecond*100))
 	conn.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
 
-	h, err := codec.ReadHeader(rb)
+	var h header
+
+	buf := make([]byte, maxHeaderSize)
+	rb.Read(buf)
+
+	_, err = codec.ReadHeader(&h, buf)
 	RequireNil(t, err)
 	AssertEqual(t, opPong, h.OpCode)
 	AssertTrue(t, h.Fin)
@@ -232,7 +237,12 @@ func TestServerSendUnmasked(t *testing.T) {
 		_, err := (*send).conn.Write(data)
 		RequireNil(t, err)
 
-		h, err := codec.ReadHeader(rb)
+		var h header
+
+		buf := make([]byte, maxHeaderSize)
+		rb.Read(buf)
+
+		_, err = codec.ReadHeader(&h, buf)
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 
@@ -293,7 +303,11 @@ func TestServerSendMasked(t *testing.T) {
 		_, err := (*send).conn.(*Conn).Conn.Write(data)
 		RequireNil(t, err)
 
-		h, err = codec.ReadHeader(rb)
+		h.reset()
+
+		buf := make([]byte, maxHeaderSize)
+
+		_, err = codec.ReadHeader(&h, buf)
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 

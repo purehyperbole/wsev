@@ -2,7 +2,6 @@ package wsev
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -76,10 +75,9 @@ var (
 type listener struct {
 	handler       *Handler
 	codec         *codec
-	bufpool       *sync.Pool
 	readbuf       *bufio.Reader
-	framebuf      *bytes.Buffer
-	messagebuf    *bytes.Buffer
+	readbufpool   *sync.Pool
+	writebufpool  *sync.Pool
 	timerheap     heap
 	timermu       sync.Mutex
 	conns         sync.Map
@@ -92,17 +90,16 @@ type listener struct {
 	fd            int
 }
 
-func newListener(epollFd int, handler *Handler, bufpool *sync.Pool, readDeadline, flushDeadline time.Duration, writebufsize int) *listener {
+func newListener(epollFd int, handler *Handler, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline time.Duration, writebufsize int) *listener {
 	l := &listener{
 		fd:            epollFd,
 		readDeadline:  readDeadline,
 		flushDeadline: flushDeadline,
 		writebufsize:  writebufsize,
-		bufpool:       bufpool,
-		codec:         newCodec(),
+		readbufpool:   readbufpool,
+		writebufpool:  writebufpool,
 		readbuf:       bufio.NewReaderSize(nil, DefaultBufferSize),
-		framebuf:      bytes.NewBuffer(make([]byte, 0, DefaultBufferSize)),
-		messagebuf:    bytes.NewBuffer(make([]byte, 0, DefaultBufferSize)),
+		codec:         newCodec(),
 		handler:       handler,
 	}
 
@@ -143,19 +140,31 @@ func (l *listener) handleEvents() {
 			}
 
 			cn := conn.(*Conn)
-			l.readbuf.Reset(cn)
 
 			if events[i].Events&unix.POLLHUP > 0 {
 				l.disconnect(int(events[i].Fd), cn, io.EOF)
 				continue
 			}
 
+			buf := cn.acquireReadBuffer()
+
 			// read until there is no more data in the read buffer
-			for {
+			// limit this to a maximum amount so we don't get
+			// dominated by a single connection
+			for i := 0; i < 20; i++ {
+				// buffer data from the underlying connection
+				err = cn.buffer()
+				if err != nil {
+					if errors.Is(err, syscall.EAGAIN) {
+						// there's no data left to read
+						break
+					}
+				}
+
+				// upgrade the connection and write upgrade negotiation
+				// response directly to underlying connection
 				if cn.upgrade() {
-					// upgrade the connection and write upgrade negotiation
-					// response directly to underlying connection
-					err = acceptWs(cn.Conn, l.readbuf)
+					err = acceptWs(cn, buf, l.readbuf)
 					if err != nil {
 						l.disconnect(int(events[i].Fd), cn, err)
 						break
@@ -166,18 +175,16 @@ func (l *listener) handleEvents() {
 					}
 				}
 
-				err = l.read(events[i].Fd, cn)
+				err = l.read(events[i].Fd, cn, buf)
 				if err != nil {
 					l.disconnect(int(events[i].Fd), cn, err)
 					break
 				}
-
-				if l.readbuf.Buffered() < 1 {
-					break
-				}
 			}
 
-			if cn.h > HeapRemoved {
+			cn.tryReleaseReadBuffer()
+
+			if cn.heapindex > HeapRemoved {
 				// reset the timer on the connection
 				l.timermu.Lock()
 				l.timerheap.decrease(cn, now)
@@ -187,9 +194,14 @@ func (l *listener) handleEvents() {
 	}
 }
 
-func (l *listener) read(fd int32, conn *Conn) error {
-	op, err := l.assembleFrame(conn)
+func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
+	op, err := l.assembleFrame(conn, buf)
 	if err != nil {
+		if errors.Is(err, syscall.EAGAIN) {
+			// we don't have a complete frame, leave buffers as is
+			return nil
+		}
+
 		ce, ok := err.(*closeError)
 		if !ok {
 			return err
@@ -214,20 +226,20 @@ func (l *listener) read(fd int32, conn *Conn) error {
 
 	switch op {
 	case opText:
-		if !utf8.Valid(l.messagebuf.Bytes()) {
+		if !utf8.Valid(buf.m.Bytes()) {
 			return conn.CloseWith(CloseStatusInvalidFramePayloadData, "invalid utf8 payload", false)
 		}
 
 		if l.handler.OnMessage != nil {
-			l.handler.OnMessage(conn, l.messagebuf.Bytes())
+			l.handler.OnMessage(conn, buf.m.Bytes())
 		} else if l.handler.OnText != nil {
-			l.handler.OnText(conn, l.messagebuf.String())
+			l.handler.OnText(conn, buf.m.String())
 		}
 	case opBinary:
 		if l.handler.OnMessage != nil {
-			l.handler.OnMessage(conn, l.messagebuf.Bytes())
+			l.handler.OnMessage(conn, buf.m.Bytes())
 		} else if l.handler.OnBinary != nil {
-			l.handler.OnBinary(conn, l.messagebuf.Bytes())
+			l.handler.OnBinary(conn, buf.m.Bytes())
 		}
 	case opClose:
 		if conn.closed() {
@@ -260,138 +272,133 @@ func (l *listener) read(fd int32, conn *Conn) error {
 }
 
 // reads a frame and outputs its payload into a frame, text or binary buffer
-func (l *listener) assembleFrame(conn *Conn) (opCode, error) {
-	l.framebuf.Reset()
-
-	err := conn.SetReadDeadline(time.Now().Add(l.readDeadline))
+func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
+	offset, err := l.codec.ReadHeader(&buf.h, buf.f)
 	if err != nil {
 		return 0, err
-	}
-
-	h, err := l.codec.ReadHeader(l.readbuf)
-	if err != nil {
-		return 0, err
-	}
-
-	err = conn.SetReadDeadline(time.Now().Add(l.readDeadline))
-	if err != nil {
-		return h.OpCode, err
 	}
 
 	// validate this frame after we have read data to avoid
 	// epoll waking us up again to read the remaining bytes
-	if h.Rsv > 0 {
+	if buf.h.Rsv > 0 {
 		// we don't support rsv bits > 0
-		return 0, l.discard(h.Length, ErrInvalidRSVBits)
+		return 0, ErrInvalidRSVBits
 	}
 
-	if h.isReserved() {
+	if buf.h.isReserved() {
 		// reserved op code used
-		return 0, l.discard(h.Length, ErrInvalidOpCode)
+		return 0, ErrInvalidOpCode
 	}
 
-	if h.isControl() {
-		if !h.Fin {
+	if buf.h.isControl() {
+		if !buf.h.Fin {
 			// control frames cannot be fragmented
-			return 0, l.discard(h.Length, ErrInvalidContinuation)
+			return 0, ErrInvalidContinuation
 		}
-		if h.Length > 125 {
+		if buf.h.Length > 125 {
 			// control frames cannot have payloads over 125 bytes
-			return 0, l.discard(h.Length, ErrInvalidControlLength)
+			return 0, ErrInvalidControlLength
 		}
-		if h.OpCode == opClose && h.Length == 1 {
-			return 0, l.discard(h.Length, ErrInvalidCloseReason)
+		if buf.h.OpCode == opClose && buf.h.Length == 1 {
+			return 0, ErrInvalidCloseReason
 		}
 	}
 
-	var buf *bytes.Buffer
-
-	switch h.OpCode {
+	switch buf.h.OpCode {
 	case opText, opBinary:
-		l.messagebuf.Reset()
-
 		// try to set a continuation op code
-		if !conn.setContinuation(h.OpCode) {
+		if !conn.setContinuation(buf.h.OpCode) {
 			// if this is a text or binary message and not final
 			// and we coudln't set the op code for a continuation
 			// due to an existing cotinuation, fail
-			return 0, l.discard(h.Length, ErrInvalidContinuation)
+			return 0, ErrInvalidContinuation
 		}
 
-		if !h.Fin {
+		if !buf.h.Fin {
 			// return this frame as a continuation
-			h.OpCode = opContinuation
+			buf.h.OpCode = opContinuation
 		} else {
 			// reset the continuation as this is a final frame
 			conn.resetContinuation()
 		}
-
-		buf = l.messagebuf
 	case opContinuation:
 		if conn.continuation() == 0 {
 			// we've received a continuation frame
 			// that was not started with a text or
 			// binary op frame, so fail
-			return 0, l.discard(h.Length, ErrInvalidContinuation)
+			return 0, ErrInvalidContinuation
 		} else {
 			// select the message buffer to write the continuation
 			// payload into
-			buf = l.messagebuf
-
-			if h.Fin {
+			if buf.h.Fin {
 				// we've reached the last continuation frame
 				// so reset the op code and give this header
 				// its real opcode
-				h.OpCode = conn.continuation()
+				buf.h.OpCode = conn.continuation()
 				conn.resetContinuation()
 			}
 		}
-	default:
-		buf = l.framebuf
 	}
 
-	_, err = io.CopyN(buf, l.readbuf, h.Length)
-	if err != nil {
-		return h.OpCode, err
+	// copy our buffered frame data to our message buffer
+	if buf.h.Length < int64(len(buf.f)-offset) {
+		_, _ = buf.m.Write(buf.f[offset : offset+int(buf.h.Length)])
+		buf.h.received = buf.h.Length
+
+		remaining := len(buf.f) - offset + int(buf.h.Length)
+
+		// move the remaining bytes forward to the start of the buffer
+		// TODO use a circular buffer to avoid this...
+		copy(buf.f, buf.f[offset+int(buf.h.Length):])
+		buf.f = buf.f[:remaining]
+	} else {
+		_, _ = buf.m.Write(buf.f[offset:])
+		buf.h.received = int64(len(buf.f) - offset)
+		buf.f = buf.f[:0]
 	}
 
-	if h.Masked {
+	if buf.h.Length != buf.h.received {
+		return 0, syscall.EAGAIN
+	}
+
+	if buf.h.Masked {
 		// apply mask to frame we've just read
 		cipher(
-			buf.Bytes()[buf.Len()-int(h.Length):],
-			h.Mask,
+			buf.m.Bytes()[buf.m.Len()-int(buf.h.Length):],
+			buf.h.Mask,
 			0,
 		)
 	}
 
 	// validate the payload
-	switch h.OpCode {
+	switch buf.h.OpCode {
 	case opClose:
-		if l.framebuf.Len() >= 2 {
-			code := CloseStatus(binary.BigEndian.Uint16(l.framebuf.Bytes()[:2]))
+		if buf.m.Len() >= 2 {
+			code := CloseStatus(binary.BigEndian.Uint16(buf.m.Bytes()[:2]))
 
 			_, valid := validCloseStatus[code]
 			if !valid {
 				return 0, ErrInvalidCloseReason
 			}
 
-			if !utf8.Valid(l.framebuf.Bytes()[2:]) {
+			if !utf8.Valid(buf.m.Bytes()[2:]) {
 				return 0, ErrInvalidCloseEncoding
 			}
 		}
 	case opText:
-		if !utf8.Valid(buf.Bytes()[buf.Len()-int(h.Length):]) {
+		if !utf8.Valid(buf.m.Bytes()[buf.m.Len()-int(buf.h.Length):]) {
 			return 0, ErrInvalidPayloadEncoding
 		}
 	}
 
-	return h.OpCode, nil
+	return buf.h.OpCode, nil
 }
 
 func (l *listener) register(fd int, conn net.Conn) {
 	bc := newBufConn(
 		conn,
-		l.bufpool,
+		l.readbufpool,
+		l.writebufpool,
 		l.flushDeadline,
 		func(bc *Conn, err error) {
 			l.disconnect(fd, bc, err)
@@ -447,10 +454,12 @@ func (l *listener) error(err error, isFatal bool) {
 }
 
 func (l *listener) pongWs(conn *Conn) error {
+	buf := conn.acquireReadBuffer()
+
 	hd, err := l.codec.BuildHeader(header{
 		OpCode: opPong,
 		Fin:    true,
-		Length: int64(l.framebuf.Len()),
+		Length: int64(buf.m.Len()),
 	})
 
 	if err != nil {
@@ -463,7 +472,7 @@ func (l *listener) pongWs(conn *Conn) error {
 	// payload in one syscall
 	b := net.Buffers{
 		hd,
-		l.framebuf.Bytes(),
+		buf.m.Bytes(),
 	}
 
 	// write directly to the connection
@@ -492,7 +501,7 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 		return
 	}
 
-	if conn.h > HeapRemoved {
+	if conn.heapindex > HeapRemoved {
 		// if this hasn't been removed from the heap
 		// remove it
 		l.timermu.Lock()
@@ -503,15 +512,6 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	if l.handler.OnDisconnect != nil {
 		l.handler.OnDisconnect(conn, derr)
 	}
-}
-
-func (l *listener) discard(length int64, cerr error) error {
-	_, err := io.CopyN(io.Discard, l.readbuf, length)
-	if err != nil {
-		return err
-	}
-
-	return cerr
 }
 
 func (l *listener) shutdown() error {

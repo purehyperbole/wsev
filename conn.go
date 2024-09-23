@@ -2,10 +2,12 @@ package wsev
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -16,9 +18,12 @@ const (
 	HeapUnassigned = -2
 )
 
-// holds a read buffer
+// holds a reader, frame and message buffer
 type rbuf struct {
-	b *bufio.Reader
+	h header
+	f []byte
+	//f *bytes.Buffer
+	m *bytes.Buffer
 }
 
 // holds a write buffer and codec
@@ -31,26 +36,31 @@ type wbuf struct {
 // A wrapped net.Conn with on demand buffers that implements the net.Conn interface
 type Conn struct {
 	net.Conn
-	v any                // user defined  value
-	p *sync.Pool         // buffer pool
-	b *wbuf              // acquired write buffer
-	q func(*Conn, error) // quit callback
-	f time.Duration      // flush interval
-	m sync.Mutex         // write buffer lock
-	h int                // index of this connection in timer heap
-	n int32              // marks a continuation frame
-	c int32              // marks a connection as closed
-	u int32              // marks the connection been upgraded
-	s bool               // marks for flush scheduling
+	fd             int                // file descriptor
+	value          any                // user defined value
+	readbufpool    *sync.Pool         // read buffer pool
+	writebufpool   *sync.Pool         // write buffer pool
+	readbuf        *rbuf              // acquired read buffer
+	writebuf       *wbuf              // acquired write buffer
+	quit           func(*Conn, error) // quit callback
+	flush          time.Duration      // flush interval
+	mutex          sync.Mutex         // write buffer lock
+	heapindex      int                // index of this connection in timer heap
+	iscontinuation int32              // marks a continuation frame
+	isclosed       int32              // marks a connection as closed
+	upgraded       int32              // marks the connection been upgraded
+	scheduled      bool               // marks for flush scheduling
 }
 
-func newBufConn(conn net.Conn, bufpool *sync.Pool, flush time.Duration, shutdownCallback func(*Conn, error)) *Conn {
+func newBufConn(conn net.Conn, readbufpool, writebufpool *sync.Pool, flush time.Duration, shutdownCallback func(*Conn, error)) *Conn {
 	return &Conn{
-		Conn: conn,
-		p:    bufpool,
-		f:    flush,
-		q:    shutdownCallback,
-		h:    HeapUnassigned,
+		Conn:         conn,
+		fd:           connectionFd(conn),
+		readbufpool:  readbufpool,
+		writebufpool: writebufpool,
+		flush:        flush,
+		quit:         shutdownCallback,
+		heapindex:    HeapUnassigned,
 	}
 }
 
@@ -75,19 +85,19 @@ func (c *Conn) WriteText(s string) (int, error) {
 // CloseWith writes all existing buffered state and sends close frame to the connection.
 // if disconnect is specified as true, the underlying connection will be closed immediately
 func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) error {
-	c.m.Lock()
+	c.mutex.Lock()
 
 	defer func() {
 		// call the callback to close the connection and remove it from epoll, if we are disconnecting
 		if disconnect {
-			c.q(c, nil)
+			c.quit(c, nil)
 		}
-		if c.b != nil {
-			c.b.b.Reset(nil)
-			c.p.Put(c.b)
-			c.b = nil
+		if c.writebuf != nil {
+			c.writebuf.b.Reset(nil)
+			c.writebufpool.Put(c.writebuf)
+			c.writebuf = nil
 		}
-		c.m.Unlock()
+		c.mutex.Unlock()
 	}()
 
 	// try to mark our connection as closed
@@ -95,13 +105,15 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 		return ErrConnectionAlreadyClosed
 	}
 
+	c.releaseReadBuffer()
+
 	// if we don't have a write buffer, then get one from the pool
-	if c.b == nil {
-		c.b = c.p.Get().(*wbuf)
-		c.b.b.Reset(c.Conn)
+	if c.writebuf == nil {
+		c.writebuf = c.writebufpool.Get().(*wbuf)
+		c.writebuf.b.Reset(c.Conn)
 	}
 
-	err := c.b.c.WriteHeader(c.b.b, header{
+	err := c.writebuf.c.WriteHeader(c.writebuf.b, header{
 		OpCode: opClose,
 		Fin:    true,
 		Length: int64(len(reason) + 2),
@@ -111,19 +123,19 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 	}
 
 	// write directly to the underlying connection
-	binary.BigEndian.PutUint16(c.b.s[:], uint16(status))
+	binary.BigEndian.PutUint16(c.writebuf.s[:], uint16(status))
 
-	_, err = c.b.b.Write(c.b.s[:])
+	_, err = c.writebuf.b.Write(c.writebuf.s[:])
 	if err != nil {
 		return err
 	}
 
-	_, err = c.b.b.WriteString(reason)
+	_, err = c.writebuf.b.WriteString(reason)
 	if err != nil {
 		return err
 	}
 
-	err = c.b.b.Flush()
+	err = c.writebuf.b.Flush()
 	if err != nil {
 		return err
 	}
@@ -143,26 +155,28 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 // CloseImmediatelyWith sends close frame to the connection immediately, discarding any buffered state.
 // if disconnect is specified as true, the underlying connection will be closed immediately
 func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnect bool) error {
-	c.m.Lock()
+	c.mutex.Lock()
 
 	defer func() {
 		// call the callback to close the connection and remove it from epoll, if we are disconnecting
 		if disconnect {
-			c.q(c, nil)
+			c.quit(c, nil)
 		}
 		// return the buffer and remove it from this connection
-		if c.b != nil {
-			c.b.b.Reset(nil)
-			c.p.Put(c.b)
-			c.b = nil
+		if c.writebuf != nil {
+			c.writebuf.b.Reset(nil)
+			c.writebufpool.Put(c.writebuf)
+			c.writebuf = nil
 		}
-		c.m.Unlock()
+		c.mutex.Unlock()
 	}()
 
 	// try to mark our connection as closed
 	if !c.close() {
 		return ErrConnectionAlreadyClosed
 	}
+
+	c.releaseReadBuffer()
 
 	hd, err := newWriteCodec().BuildHeader(header{
 		OpCode: opClose,
@@ -204,17 +218,37 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 
 // Get gets a user specified value
 func (c *Conn) Get() any {
-	return c.v
+	return c.value
 }
 
 // Set sets a user specified value
-func (c *Conn) Set(v any) {
-	c.v = v
+func (c *Conn) Set(value any) {
+	c.value = value
+}
+
+func (c *Conn) buffer() error {
+	buf := c.acquireReadBuffer()
+
+	// check our buffer isnt full
+	if len(buf.f) == cap(buf.f) {
+		return bufio.ErrBufferFull
+	}
+
+	// read some data into our read buffer
+	n, err := syscall.Read(c.fd, buf.f[len(buf.f):cap(buf.f)])
+	if err != nil {
+		return err
+	}
+
+	// reslice our buffer to account for the new bytes
+	buf.f = buf.f[:len(buf.f)+n]
+
+	return nil
 }
 
 func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, error)) (int, error) {
-	c.m.Lock()
-	defer c.m.Unlock()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
 	// try to mark our connection as closed
 	if c.closed() {
@@ -222,13 +256,13 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 	}
 
 	// if we don't have a write buffer, then get one from the pool
-	if c.b == nil {
-		c.b = c.p.Get().(*wbuf)
-		c.b.b.Reset(c.Conn)
+	if c.writebuf == nil {
+		c.writebuf = c.writebufpool.Get().(*wbuf)
+		c.writebuf.b.Reset(c.Conn)
 	}
 
 	// write the ws header and data to the buffer
-	err := c.b.c.WriteHeader(c.b.b, header{
+	err := c.writebuf.c.WriteHeader(c.writebuf.b, header{
 		OpCode: op,
 		Fin:    true,
 		Length: int64(size),
@@ -237,54 +271,54 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 		return 0, err
 	}
 
-	n, err := wcb(c.b.b)
+	n, err := wcb(c.writebuf.b)
 	if err != nil {
 		return n, err
 	}
 
 	// if this buffer has been flushed, then return the buffer to the pool
-	if c.b.b.Buffered() < 1 {
+	if c.writebuf.b.Buffered() < 1 {
 		// return the buffer and remove it from this connection
-		c.b.b.Reset(nil)
-		c.p.Put(c.b)
-		c.b = nil
+		c.writebuf.b.Reset(nil)
+		c.writebufpool.Put(c.writebuf)
+		c.writebuf = nil
 
 		return int(n), err
 	}
 
 	// schedule our buffer to be flushed if it is not already
-	if !c.s {
-		c.s = true
+	if !c.scheduled {
+		c.scheduled = true
 
-		time.AfterFunc(c.f, func() {
-			c.m.Lock()
+		time.AfterFunc(c.flush, func() {
+			c.mutex.Lock()
 			defer func() {
 				// return the buffer and remove it from this connection
-				if c.b != nil {
-					c.b.b.Reset(nil)
-					c.p.Put(c.b)
-					c.b = nil
+				if c.writebuf != nil {
+					c.writebuf.b.Reset(nil)
+					c.writebufpool.Put(c.writebuf)
+					c.writebuf = nil
 				}
 
-				c.s = false
-				c.m.Unlock()
+				c.scheduled = false
+				c.mutex.Unlock()
 			}()
 
 			// someone else has flushed the buffer, so exit
-			if c.b == nil {
+			if c.writebuf == nil {
 				return
 			}
 
-			if c.b.b.Buffered() < 1 {
+			if c.writebuf.b.Buffered() < 1 {
 				return
 			}
 
 			// write all data
-			err := c.b.b.Flush()
+			err := c.writebuf.b.Flush()
 			if err != nil {
 				// mark the connection as closed and call the error callback
 				c.close()
-				c.q(c, err)
+				c.quit(c, err)
 			}
 		})
 	}
@@ -292,26 +326,50 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 	return size, nil
 }
 
+func (c *Conn) acquireReadBuffer() *rbuf {
+	if c.readbuf == nil {
+		c.readbuf = c.readbufpool.Get().(*rbuf)
+	}
+
+	return c.readbuf
+}
+
+func (c *Conn) releaseReadBuffer() {
+	c.readbuf.f = c.readbuf.f[:0]
+	c.readbuf.h.reset()
+	c.readbuf.m.Reset()
+	c.readbufpool.Put(c.readbuf)
+	c.readbuf = nil
+}
+
+func (c *Conn) tryReleaseReadBuffer() {
+	if c.readbuf != nil && len(c.readbuf.f) > 0 {
+		return
+	}
+
+	c.releaseReadBuffer()
+}
+
 func (c *Conn) continuation() opCode {
-	return opCode(atomic.LoadInt32(&c.n))
+	return opCode(atomic.LoadInt32(&c.iscontinuation))
 }
 
 func (c *Conn) setContinuation(opCode opCode) bool {
-	return atomic.CompareAndSwapInt32(&c.n, 0, int32(opCode))
+	return atomic.CompareAndSwapInt32(&c.iscontinuation, 0, int32(opCode))
 }
 
 func (c *Conn) resetContinuation() {
-	atomic.StoreInt32(&c.n, 0)
+	atomic.StoreInt32(&c.iscontinuation, 0)
 }
 
 func (c *Conn) closed() bool {
-	return atomic.LoadInt32(&c.c) == 1
+	return atomic.LoadInt32(&c.isclosed) == 1
 }
 
 func (c *Conn) close() bool {
-	return atomic.CompareAndSwapInt32(&c.c, 0, 1)
+	return atomic.CompareAndSwapInt32(&c.isclosed, 0, 1)
 }
 
 func (c *Conn) upgrade() bool {
-	return atomic.CompareAndSwapInt32(&c.u, 0, 1)
+	return atomic.CompareAndSwapInt32(&c.upgraded, 0, 1)
 }

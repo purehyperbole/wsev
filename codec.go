@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"syscall"
 )
 
 // ------------------------------------------------------------------------------ //
@@ -82,12 +83,13 @@ func init() {
 // Header represents websocket frame header.
 // See https://tools.ietf.org/html/rfc6455#section-5.2
 type header struct {
-	Fin    bool
-	Rsv    byte
-	OpCode opCode
-	Masked bool
-	Mask   [4]byte
-	Length int64
+	Fin      bool
+	Rsv      byte
+	OpCode   opCode
+	Masked   bool
+	Mask     [4]byte
+	Length   int64
+	received int64
 }
 
 func (h *header) isControl() bool {
@@ -98,15 +100,17 @@ func (h *header) isReserved() bool {
 	return h.OpCode != opContinuation && h.OpCode != opText && h.OpCode != opBinary && h.OpCode != opClose && h.OpCode != opPing && h.OpCode != opPong
 }
 
+func (h *header) reset() {
+	*h = header{}
+}
+
 // Codec for use in reading and writing websocket frames
 type codec struct {
-	rbts []byte
 	wbts []byte
 }
 
 func newCodec() *codec {
 	return &codec{
-		rbts: make([]byte, 2, maxHeaderSize-2),
 		wbts: make([]byte, maxHeaderSize),
 	}
 }
@@ -119,25 +123,30 @@ func newWriteCodec() *codec {
 
 // ReadHeader reads a frame header from r.
 // ported from gobwas/ws to support reuse of the allocated frame header
-func (c *codec) ReadHeader(r io.Reader) (h header, err error) {
-	// Prepare to hold first 2 bytes to choose size of next read.
-	_, err = io.ReadFull(r, c.rbts[:2])
-	if err != nil {
-		return
+func (c *codec) ReadHeader(h *header, b []byte) (int, error) {
+	// check if there is an existing header
+	if h.Length > 0 {
+		return 0, nil
 	}
 
-	h.Fin = c.rbts[0]&bit0 != 0
-	h.Rsv = (c.rbts[0] & 0x70) >> 4
-	h.OpCode = opCode(c.rbts[0] & 0x0f)
+	// Check we have enough bytes in the buffer, if not return EAGAIN
+	// Until we have enough data...
+	if len(b) < 2 {
+		return 0, syscall.EAGAIN
+	}
+
+	h.Fin = b[0]&bit0 != 0
+	h.Rsv = (b[0] & 0x70) >> 4
+	h.OpCode = opCode(b[0] & 0x0f)
 
 	var extra int
 
-	if c.rbts[1]&bit0 != 0 {
+	if b[1]&bit0 != 0 {
 		h.Masked = true
 		extra += 4
 	}
 
-	length := c.rbts[1] & 0x7f
+	length := b[1] & 0x7f
 	switch {
 	case length < 126:
 		h.Length = int64(length)
@@ -149,45 +158,41 @@ func (c *codec) ReadHeader(r io.Reader) (h header, err error) {
 		extra += 8
 
 	default:
-		err = ErrHeaderLengthUnexpected
-		return
+		return 0, ErrHeaderLengthUnexpected
 	}
 
 	if extra == 0 {
-		return
+		return 2, nil
 	}
 
-	// Increase len of bts to extra bytes need to read.
-	// Overwrite first 2 bytes that was read before.
-	c.rbts = c.rbts[:extra]
-	_, err = io.ReadFull(r, c.rbts)
-	if err != nil {
-		return
+	if len(b) < extra {
+		// We don't have enough data buffered to read the extra header bytes
+		return 0, syscall.EAGAIN
 	}
 
 	switch {
 	case length == 126:
-		h.Length = int64(binary.BigEndian.Uint16(c.rbts[:2]))
+		h.Length = int64(binary.BigEndian.Uint16(b[2:4]))
 		if h.Masked {
-			copy(h.Mask[:], c.rbts[2:])
+			copy(h.Mask[:], b[4:])
 		}
 
 	case length == 127:
-		if c.rbts[0]&0x80 != 0 {
-			err = ErrHeaderLengthMSB
-			return
+		if b[2]&0x80 != 0 {
+			return 0, ErrHeaderLengthMSB
 		}
-		h.Length = int64(binary.BigEndian.Uint64(c.rbts[:8]))
+		h.Length = int64(binary.BigEndian.Uint64(b[2:10]))
 		if h.Masked {
-			copy(h.Mask[:], c.rbts[8:])
+			copy(h.Mask[:], b[10:])
 		}
 	default:
 		if h.Masked {
-			copy(h.Mask[:], c.rbts)
+			copy(h.Mask[:], b[2:])
 		}
 	}
 
-	return
+	// return the header's size as an offset
+	return 2 + extra, nil
 }
 
 // WriteHeader writes header binary representation into w.

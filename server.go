@@ -2,6 +2,7 @@ package wsev
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
@@ -96,6 +97,7 @@ type Handler struct {
 }
 
 type Server struct {
+	buffers             sync.Pool
 	rbuffers            sync.Pool
 	wbuffers            sync.Pool
 	handler             *Handler
@@ -108,23 +110,8 @@ type Server struct {
 
 func New(handler *Handler, opts ...option) *Server {
 	s := &Server{
-		handler:   handler,
-		listeners: make([]*listener, runtime.GOMAXPROCS(0)),
-		rbuffers: sync.Pool{
-			New: func() any {
-				return &rbuf{
-					b: bufio.NewReaderSize(nil, DefaultBufferSize),
-				}
-			},
-		},
-		wbuffers: sync.Pool{
-			New: func() any {
-				return &wbuf{
-					b: bufio.NewWriterSize(nil, DefaultBufferSize),
-					c: newWriteCodec(),
-				}
-			},
-		},
+		handler:             handler,
+		listeners:           make([]*listener, runtime.GOMAXPROCS(0)),
 		readDeadline:        DefaultReadDeadline,
 		writeBufferDeadline: DefaultBufferFlushDeadline,
 		writeBufferSize:     DefaultBufferSize,
@@ -133,6 +120,24 @@ func New(handler *Handler, opts ...option) *Server {
 
 	for i := range opts {
 		opts[i](s)
+	}
+
+	s.rbuffers = sync.Pool{
+		New: func() any {
+			return &rbuf{
+				f: make([]byte, s.readBufferSize),
+				m: bytes.NewBuffer(make([]byte, 0, s.readBufferSize)),
+			}
+		},
+	}
+
+	s.wbuffers = sync.Pool{
+		New: func() any {
+			return &wbuf{
+				b: bufio.NewWriterSize(nil, s.writeBufferSize),
+				c: newWriteCodec(),
+			}
+		},
 	}
 
 	return s
@@ -148,6 +153,7 @@ func (s *Server) Serve(port int) error {
 		s.listeners[i] = newListener(
 			fd,
 			s.handler,
+			&s.rbuffers,
 			&s.wbuffers,
 			s.readDeadline,
 			s.writeBufferDeadline,
@@ -210,9 +216,19 @@ func (s *Server) error(err error, isFatal bool) {
 	}
 }
 
-func acceptWs(conn net.Conn, buf *bufio.Reader) error {
+func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
+	// http headers should be small enough to arrive in a single
+	// packet, so this will be unlikely to time out
+	err := conn.Conn.SetReadDeadline(time.Now().Add(time.Second))
+	if err != nil {
+		return err
+	}
+
+	// wrap our read buffer in a temporary bufio reader
+	rb.Reset(bytes.NewBuffer(buf.f))
+
 	// https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.1
-	r, err := http.ReadRequest(buf)
+	r, err := http.ReadRequest(rb)
 	if err != nil {
 		return err
 	}

@@ -9,7 +9,7 @@ type heap []entry
 
 func (h *heap) push(key int64, value *Conn) {
 	current := len(*h)
-	value.h = current
+	value.heapindex = current
 
 	*h = append(*h, entry{
 		key:   key,
@@ -29,7 +29,7 @@ func (h *heap) push(key int64, value *Conn) {
 }
 
 func (h *heap) delete(value *Conn) {
-	current := value.h
+	current := value.heapindex
 	h.swap(current, len(*h)-1)
 
 	*h = (*h)[:len(*h)-1]
@@ -50,13 +50,13 @@ func (h *heap) delete(value *Conn) {
 		current = smallest
 	}
 
-	value.h = HeapRemoved
+	value.heapindex = HeapRemoved
 }
 
 func (h *heap) decrease(value *Conn, key int64) {
-	current := value.h
+	current := value.heapindex
 
-	if value.h < 0 {
+	if value.heapindex < 0 {
 		return
 	}
 
@@ -81,7 +81,7 @@ func (h *heap) pop() *Conn {
 
 	value := (*h)[0].value
 	(*h)[0] = (*h)[len(*h)-1]
-	(*h)[0].value.h = 0
+	(*h)[0].value.heapindex = 0
 	*h = (*h)[:len(*h)-1]
 
 	var current int
@@ -102,7 +102,7 @@ func (h *heap) pop() *Conn {
 		current = smallest
 	}
 
-	value.h = HeapRemoved
+	value.heapindex = HeapRemoved
 
 	return value
 }
@@ -117,8 +117,8 @@ func (h *heap) popIf(cond int64) *Conn {
 
 func (h *heap) swap(a, b int) {
 	// swap the index values on the connection
-	(*h)[a].value.h = b
-	(*h)[b].value.h = a
+	(*h)[a].value.heapindex = b
+	(*h)[b].value.heapindex = a
 
 	(*h)[a], (*h)[b] = (*h)[b], (*h)[a]
 }
