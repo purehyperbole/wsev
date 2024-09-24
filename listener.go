@@ -183,6 +183,15 @@ func (l *listener) handleEvents() {
 				err = l.read(events[i].Fd, cn, buf)
 				if err != nil {
 					if errors.Is(err, ErrDataNeeded) {
+						err = cn.buffer()
+						if err != nil {
+							if !errors.Is(err, syscall.EAGAIN) {
+								// there's no data left to read
+								l.disconnect(int(events[i].Fd), cn, err)
+							}
+							break
+						}
+
 						iters++
 						continue
 					}
@@ -287,6 +296,10 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 	err := l.codec.ReadHeader(&buf.h, buf.b)
 	if err != nil {
 		return 0, err
+	}
+
+	if buf.h.remaining == int(buf.h.Length) {
+		//fmt.Println("NEW HEADER", conn.fd, buf.b.buffered(), buf.h)
 	}
 
 	// validate this frame after we have read data to avoid
