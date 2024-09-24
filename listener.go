@@ -150,6 +150,8 @@ func (l *listener) handleEvents() {
 
 			buf := cn.acquireReadBuffer()
 
+			var iters int
+
 			// buffer data from the underlying connection
 			err = cn.buffer()
 			if err != nil {
@@ -160,12 +162,10 @@ func (l *listener) handleEvents() {
 				continue
 			}
 
-			var iters int
-
 			// read until there is no more data in the read buffer.
 			// limit this to a maximum amount so we don't get
 			// dominated by a single connection
-			for buf.b.buffered() > 0 || iters >= 10 {
+			for buf.b.buffered() > 0 || iters <= 10 {
 				// upgrade the connection and write upgrade negotiation
 				// response directly to underlying connection
 				if cn.upgrade() {
@@ -183,19 +183,7 @@ func (l *listener) handleEvents() {
 				err = l.read(events[i].Fd, cn, buf)
 				if err != nil {
 					if errors.Is(err, ErrDataNeeded) {
-						// we don't have a complete frame, try and buffer
-						// more data from the underlying connection
-						err = cn.buffer()
-						if err != nil {
-							// disconnect if not EAGAIN
-							if !errors.Is(err, syscall.EAGAIN) {
-								l.disconnect(int(events[i].Fd), cn, err)
-							}
-							break
-						}
-
 						iters++
-
 						continue
 					}
 
@@ -287,8 +275,6 @@ func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
 		if l.handler.OnPong != nil {
 			l.handler.OnPong(conn)
 		}
-
-		buf.f.Reset()
 	case opContinuation:
 		return nil
 	}
@@ -301,11 +287,6 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 	err := l.codec.ReadHeader(&buf.h, buf.b)
 	if err != nil {
 		return 0, err
-	}
-
-	if buf.h.isControl() && buf.h.Length == int64(buf.h.remaining) {
-		// reset our frame buffer
-		buf.f.Reset()
 	}
 
 	// validate this frame after we have read data to avoid
@@ -424,12 +405,14 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 		)
 	}
 
-	if !buf.h.Fin {
-		// this is a continuation frame, so wait
-		// for more data to arrive so we can build
-		// the full message
-		return 0, ErrDataNeeded
-	}
+	/*
+		if !buf.h.Fin {
+			// this is a continuation frame, so wait
+			// for more data to arrive so we can build
+			// the full message
+			return 0, ErrDataNeeded
+		}
+	*/
 
 	// validate the payload
 	switch buf.h.OpCode {

@@ -98,6 +98,7 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 			c.writebufpool.Put(c.writebuf)
 			c.writebuf = nil
 		}
+		c.releaseReadBuffer()
 		c.mutex.Unlock()
 	}()
 
@@ -105,8 +106,6 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 	if !c.close() {
 		return ErrConnectionAlreadyClosed
 	}
-
-	c.releaseReadBuffer()
 
 	// if we don't have a write buffer, then get one from the pool
 	if c.writebuf == nil {
@@ -169,6 +168,7 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 			c.writebufpool.Put(c.writebuf)
 			c.writebuf = nil
 		}
+		c.releaseReadBuffer()
 		c.mutex.Unlock()
 	}()
 
@@ -176,8 +176,6 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 	if !c.close() {
 		return ErrConnectionAlreadyClosed
 	}
-
-	c.releaseReadBuffer()
 
 	hd, err := newWriteCodec().BuildHeader(header{
 		OpCode: opClose,
@@ -228,6 +226,10 @@ func (c *Conn) Set(value any) {
 }
 
 func (c *Conn) buffer() error {
+	if c.closed() {
+		return ErrConnectionAlreadyClosed
+	}
+
 	buf := c.acquireReadBuffer()
 
 	// check our buffer isnt full

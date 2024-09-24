@@ -559,7 +559,7 @@ func TestServerAutobahn(t *testing.T) {
 		},
 		//"cases":         []string{"*"},
 		//"exclude-cases": excluded,
-		"cases": []string{"3.7"}, // "4.*"}, //"1.*", "2.*",
+		"cases": []string{"5.5"},
 	})
 
 	err = os.WriteFile(filepath.Join(workdir, "config", "fuzzingclient.json"), config, 0644)
