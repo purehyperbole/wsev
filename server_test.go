@@ -196,7 +196,7 @@ func TestServerPong(t *testing.T) {
 	buf := make([]byte, maxHeaderSize)
 	rb.Read(buf)
 
-	_, err = codec.ReadHeader(&h, buf)
+	err = codec.ReadHeader(&h, buf)
 	RequireNil(t, err)
 	AssertEqual(t, opPong, h.OpCode)
 	AssertTrue(t, h.Fin)
@@ -242,16 +242,19 @@ func TestServerSendUnmasked(t *testing.T) {
 
 		var h header
 
-		buf := make([]byte, maxHeaderSize)
-		rb.Read(buf)
+		buf := make([]byte, 1024)
+		n, err := rb.Read(buf)
+		RequireNil(t, err)
 
-		_, err = codec.ReadHeader(&h, buf)
+		err = codec.ReadHeader(&h, buf[:n])
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 
-		rdata := make([]byte, h.Length)
-		io.ReadFull(rb, rdata)
-		AssertEqual(t, data, rdata)
+		if n-h.offset < int(h.Length) {
+			io.ReadFull(rb, buf[n:h.offset+int(h.Length)])
+		}
+
+		AssertEqual(t, data, buf[h.offset:h.offset+int(h.Length)])
 	}
 }
 
@@ -308,15 +311,19 @@ func TestServerSendMasked(t *testing.T) {
 
 		h.reset()
 
-		buf := make([]byte, maxHeaderSize)
+		buf := make([]byte, 1024)
+		n, err := rb.Read(buf)
+		RequireNil(t, err)
 
-		_, err = codec.ReadHeader(&h, buf)
+		err = codec.ReadHeader(&h, buf[:n])
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 
-		rdata := make([]byte, h.Length)
-		io.ReadFull(rb, rdata)
-		AssertEqual(t, data, rdata)
+		if n-h.offset < int(h.Length) {
+			io.ReadFull(rb, buf[n:h.offset+int(h.Length)])
+		}
+
+		AssertEqual(t, data, buf[h.offset:h.offset+int(h.Length)])
 	}
 }
 
@@ -367,13 +374,11 @@ func TestServerReceiveSmall(t *testing.T) {
 
 		binary.LittleEndian.PutUint64(data, uint64(i))
 
+		fmt.Println("-- writing", len(data), "bytes")
 		_, err := conn.Write(data)
 		RequireNil(t, err)
-		start := time.Now()
+
 		err = timeout(msgchan, time.Millisecond*500)
-		if err != nil {
-			fmt.Println(err, counter, time.Since(start))
-		}
 		RequireNil(t, err)
 	}
 }
@@ -697,6 +702,13 @@ func AssertNil(t *testing.T, v any) {
 
 func RequireNil(t *testing.T, v any) {
 	if v != nil {
+		fmt.Println(v)
+		t.FailNow()
+	}
+}
+
+func RequireNotNil(t *testing.T, v any) {
+	if v == nil {
 		fmt.Println(v)
 		t.FailNow()
 	}

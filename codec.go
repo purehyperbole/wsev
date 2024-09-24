@@ -89,6 +89,7 @@ type header struct {
 	Masked   bool
 	Mask     [4]byte
 	Length   int64
+	offset   int
 	received int64
 }
 
@@ -123,16 +124,16 @@ func newWriteCodec() *codec {
 
 // ReadHeader reads a frame header from r.
 // ported from gobwas/ws to support reuse of the allocated frame header
-func (c *codec) ReadHeader(h *header, b []byte) (int, error) {
+func (c *codec) ReadHeader(h *header, b []byte) error {
 	// check if there is an existing header
 	if h.Length > 0 {
-		return 0, nil
+		return nil
 	}
 
 	// Check we have enough bytes in the buffer, if not return EAGAIN
 	// Until we have enough data...
 	if len(b) < 2 {
-		return 0, syscall.EAGAIN
+		return syscall.EAGAIN
 	}
 
 	h.Fin = b[0]&bit0 != 0
@@ -158,16 +159,17 @@ func (c *codec) ReadHeader(h *header, b []byte) (int, error) {
 		extra += 8
 
 	default:
-		return 0, ErrHeaderLengthUnexpected
+		return ErrHeaderLengthUnexpected
 	}
 
 	if extra == 0 {
-		return 2, nil
+		h.offset = 2
+		return nil
 	}
 
 	if len(b) < extra {
 		// We don't have enough data buffered to read the extra header bytes
-		return 0, syscall.EAGAIN
+		return syscall.EAGAIN
 	}
 
 	switch {
@@ -179,7 +181,7 @@ func (c *codec) ReadHeader(h *header, b []byte) (int, error) {
 
 	case length == 127:
 		if b[2]&0x80 != 0 {
-			return 0, ErrHeaderLengthMSB
+			return ErrHeaderLengthMSB
 		}
 		h.Length = int64(binary.BigEndian.Uint64(b[2:10]))
 		if h.Masked {
@@ -191,8 +193,10 @@ func (c *codec) ReadHeader(h *header, b []byte) (int, error) {
 		}
 	}
 
+	h.offset = 2 + extra
+
 	// return the header's size as an offset
-	return 2 + extra, nil
+	return nil
 }
 
 // WriteHeader writes header binary representation into w.

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -240,6 +242,12 @@ func (c *Conn) buffer() error {
 		return err
 	}
 
+	if n < 1 {
+		return io.EOF
+	}
+
+	fmt.Println(">> buffered", n, "into", len(buf.f), cap(buf.f))
+
 	// reslice our buffer to account for the new bytes
 	buf.f = buf.f[:len(buf.f)+n]
 
@@ -338,6 +346,8 @@ func (c *Conn) releaseReadBuffer() {
 	if c.readbuf != nil {
 		return
 	}
+
+	fmt.Println("releasing buffer")
 
 	c.readbuf.f = c.readbuf.f[:0]
 	c.readbuf.h.reset()

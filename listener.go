@@ -134,8 +134,6 @@ func (l *listener) handleEvents() {
 		now := time.Now().Unix()
 
 		for i := 0; i < ec; i++ {
-			fmt.Println("GOT EPOLL EVENT FOR CONNECTION")
-
 			conn, ok := l.conns.Load(int(events[i].Fd))
 			if !ok {
 				continue
@@ -157,11 +155,11 @@ func (l *listener) handleEvents() {
 				// buffer data from the underlying connection
 				err = cn.buffer()
 				if err != nil {
-					fmt.Println(err)
-					if errors.Is(err, syscall.EAGAIN) {
+					if !errors.Is(err, syscall.EAGAIN) {
 						// there's no data left to read
-						break
+						l.disconnect(int(events[i].Fd), cn, err)
 					}
+					break
 				}
 
 				// upgrade the connection and write upgrade negotiation
@@ -276,10 +274,12 @@ func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
 
 // reads a frame and outputs its payload into a frame, text or binary buffer
 func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
-	offset, err := l.codec.ReadHeader(&buf.h, buf.f)
+	err := l.codec.ReadHeader(&buf.h, buf.f)
 	if err != nil {
 		return 0, err
 	}
+
+	fmt.Println("offset...", buf.h.offset, buf.h.Length)
 
 	// validate this frame after we have read data to avoid
 	// epoll waking us up again to read the remaining bytes
@@ -344,21 +344,28 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 	}
 
 	// copy our buffered frame data to our message buffer
-	if buf.h.Length < int64(len(buf.f)-offset) {
-		_, _ = buf.m.Write(buf.f[offset : offset+int(buf.h.Length)])
+	if buf.h.Length < int64(len(buf.f)-buf.h.offset) {
+		_, _ = buf.m.Write(buf.f[buf.h.offset : buf.h.offset+int(buf.h.Length)])
 		buf.h.received = buf.h.Length
 
-		remaining := len(buf.f) - offset + int(buf.h.Length)
+		remaining := len(buf.f) - buf.h.offset + int(buf.h.Length)
 
 		// move the remaining bytes forward to the start of the buffer
 		// TODO use a circular buffer to avoid this...
-		copy(buf.f, buf.f[offset+int(buf.h.Length):])
+		copy(buf.f, buf.f[buf.h.offset+int(buf.h.Length):])
 		buf.f = buf.f[:remaining]
 	} else {
-		_, _ = buf.m.Write(buf.f[offset:])
-		buf.h.received = int64(len(buf.f) - offset)
+		_, _ = buf.m.Write(buf.f[buf.h.offset:])
+		buf.h.received = int64(len(buf.f) - buf.h.offset)
 		buf.f = buf.f[:0]
 	}
+
+	// we've copied out the data so reset our header offset
+	if buf.m.Len() > 0 {
+		buf.h.offset = 0
+	}
+
+	fmt.Println("length", buf.h.Length, "received...", buf.h.received)
 
 	if buf.h.Length != buf.h.received {
 		return 0, syscall.EAGAIN

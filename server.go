@@ -97,7 +97,6 @@ type Handler struct {
 }
 
 type Server struct {
-	buffers             sync.Pool
 	rbuffers            sync.Pool
 	wbuffers            sync.Pool
 	handler             *Handler
