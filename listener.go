@@ -2,6 +2,7 @@ package wsev
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ func (e *closeError) Error() string {
 }
 
 var (
+	ErrDataNeeded              = errors.New("not enough data to continue")
 	ErrConnectionAlreadyClosed = errors.New("connection already closed")
 	ErrConnectionTimeout       = &closeError{
 		Status: CloseStatusAbnormalClosure,
@@ -148,20 +150,22 @@ func (l *listener) handleEvents() {
 
 			buf := cn.acquireReadBuffer()
 
-			// read until there is no more data in the read buffer
+			// buffer data from the underlying connection
+			err = cn.buffer()
+			if err != nil {
+				if !errors.Is(err, syscall.EAGAIN) {
+					// there's no data left to read
+					l.disconnect(int(events[i].Fd), cn, err)
+				}
+				continue
+			}
+
+			var iters int
+
+			// read until there is no more data in the read buffer.
 			// limit this to a maximum amount so we don't get
 			// dominated by a single connection
-			for i := 0; i < 20; i++ {
-				// buffer data from the underlying connection
-				err = cn.buffer()
-				if err != nil {
-					if !errors.Is(err, syscall.EAGAIN) {
-						// there's no data left to read
-						l.disconnect(int(events[i].Fd), cn, err)
-					}
-					break
-				}
-
+			for buf.b.buffered() > 0 || iters >= 10 {
 				// upgrade the connection and write upgrade negotiation
 				// response directly to underlying connection
 				if cn.upgrade() {
@@ -178,6 +182,23 @@ func (l *listener) handleEvents() {
 
 				err = l.read(events[i].Fd, cn, buf)
 				if err != nil {
+					if errors.Is(err, ErrDataNeeded) {
+						// we don't have a complete frame, try and buffer
+						// more data from the underlying connection
+						err = cn.buffer()
+						if err != nil {
+							// disconnect if not EAGAIN
+							if !errors.Is(err, syscall.EAGAIN) {
+								l.disconnect(int(events[i].Fd), cn, err)
+							}
+							break
+						}
+
+						iters++
+
+						continue
+					}
+
 					l.disconnect(int(events[i].Fd), cn, err)
 					break
 				}
@@ -198,11 +219,6 @@ func (l *listener) handleEvents() {
 func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
 	op, err := l.assembleFrame(conn, buf)
 	if err != nil {
-		if errors.Is(err, syscall.EAGAIN) {
-			// we don't have a complete frame, leave buffers as is
-			return nil
-		}
-
 		ce, ok := err.(*closeError)
 		if !ok {
 			return err
@@ -236,12 +252,16 @@ func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
 		} else if l.handler.OnText != nil {
 			l.handler.OnText(conn, buf.m.String())
 		}
+
+		buf.m.Reset()
 	case opBinary:
 		if l.handler.OnMessage != nil {
 			l.handler.OnMessage(conn, buf.m.Bytes())
 		} else if l.handler.OnBinary != nil {
 			l.handler.OnBinary(conn, buf.m.Bytes())
 		}
+
+		buf.m.Reset()
 	case opClose:
 		if conn.closed() {
 			return unix.Shutdown(int(fd), unix.SHUT_RDWR)
@@ -253,7 +273,7 @@ func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
 			return nil
 		}
 
-		err = l.pongWs(conn)
+		err = l.pongWs(conn, buf)
 		if err != nil {
 			return err
 		}
@@ -261,10 +281,14 @@ func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
 		if l.handler.OnPing != nil {
 			l.handler.OnPing(conn)
 		}
+
+		buf.f.Reset()
 	case opPong:
 		if l.handler.OnPong != nil {
 			l.handler.OnPong(conn)
 		}
+
+		buf.f.Reset()
 	case opContinuation:
 		return nil
 	}
@@ -274,12 +298,15 @@ func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
 
 // reads a frame and outputs its payload into a frame, text or binary buffer
 func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
-	err := l.codec.ReadHeader(&buf.h, buf.f)
+	err := l.codec.ReadHeader(&buf.h, buf.b)
 	if err != nil {
 		return 0, err
 	}
 
-	fmt.Println("offset...", buf.h.offset, buf.h.Length)
+	if buf.h.isControl() && buf.h.Length == int64(buf.h.remaining) {
+		// reset our frame buffer
+		buf.f.Reset()
+	}
 
 	// validate this frame after we have read data to avoid
 	// epoll waking us up again to read the remaining bytes
@@ -307,6 +334,8 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 		}
 	}
 
+	var buffer *bytes.Buffer
+
 	switch buf.h.OpCode {
 	case opText, opBinary:
 		// try to set a continuation op code
@@ -324,6 +353,8 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 			// reset the continuation as this is a final frame
 			conn.resetContinuation()
 		}
+
+		buffer = buf.m
 	case opContinuation:
 		if conn.continuation() == 0 {
 			// we've received a continuation frame
@@ -333,6 +364,8 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 		} else {
 			// select the message buffer to write the continuation
 			// payload into
+			buffer = buf.m
+
 			if buf.h.Fin {
 				// we've reached the last continuation frame
 				// so reset the op code and give this header
@@ -341,62 +374,80 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 				conn.resetContinuation()
 			}
 		}
+	default:
+		// use our frame buffer here
+		buffer = buf.f
 	}
 
 	// copy our buffered frame data to our message buffer
-	if buf.h.Length < int64(len(buf.f)-buf.h.offset) {
-		_, _ = buf.m.Write(buf.f[buf.h.offset : buf.h.offset+int(buf.h.Length)])
-		buf.h.received = buf.h.Length
+	if int64(buf.h.remaining) <= int64(buf.b.buffered()) {
+		peeked, err := buf.b.peek(buf.h.remaining)
+		if err != nil {
+			return 0, err
+		}
 
-		remaining := len(buf.f) - buf.h.offset + int(buf.h.Length)
+		_, _ = buffer.Write(peeked)
 
-		// move the remaining bytes forward to the start of the buffer
-		// TODO use a circular buffer to avoid this...
-		copy(buf.f, buf.f[buf.h.offset+int(buf.h.Length):])
-		buf.f = buf.f[:remaining]
+		buf.b.advanceRead(buf.h.remaining)
+
+		buf.h.remaining = 0
 	} else {
-		_, _ = buf.m.Write(buf.f[buf.h.offset:])
-		buf.h.received = int64(len(buf.f) - buf.h.offset)
-		buf.f = buf.f[:0]
+		peeked, err := buf.b.peek(buf.b.buffered())
+		if err != nil {
+			return 0, err
+		}
+
+		_, _ = buffer.Write(peeked)
+
+		buf.h.remaining = buf.h.remaining - buf.b.buffered()
+
+		err = buf.b.advanceRead(buf.b.buffered())
+		if err != nil {
+			return 0, err
+		}
 	}
 
-	// we've copied out the data so reset our header offset
-	if buf.m.Len() > 0 {
-		buf.h.offset = 0
+	if buf.h.remaining > 0 {
+		// we haven't finished this frame yet, so wait
+		// for more data be buffered if available
+		return 0, ErrDataNeeded
 	}
 
-	fmt.Println("length", buf.h.Length, "received...", buf.h.received)
-
-	if buf.h.Length != buf.h.received {
-		return 0, syscall.EAGAIN
-	}
+	defer buf.h.reset()
 
 	if buf.h.Masked {
 		// apply mask to frame we've just read
 		cipher(
-			buf.m.Bytes()[buf.m.Len()-int(buf.h.Length):],
+			buffer.Bytes()[buffer.Len()-int(buf.h.Length):],
 			buf.h.Mask,
 			0,
 		)
 	}
 
+	if !buf.h.Fin {
+		// this is a continuation frame, so wait
+		// for more data to arrive so we can build
+		// the full message
+		return 0, ErrDataNeeded
+	}
+
 	// validate the payload
 	switch buf.h.OpCode {
 	case opClose:
-		if buf.m.Len() >= 2 {
-			code := CloseStatus(binary.BigEndian.Uint16(buf.m.Bytes()[:2]))
+		if buf.f.Len() >= 2 {
+			code := CloseStatus(binary.BigEndian.Uint16(buf.f.Bytes()[:2]))
 
 			_, valid := validCloseStatus[code]
 			if !valid {
 				return 0, ErrInvalidCloseReason
 			}
 
-			if !utf8.Valid(buf.m.Bytes()[2:]) {
+			if !utf8.Valid(buf.f.Bytes()[2:]) {
 				return 0, ErrInvalidCloseEncoding
 			}
 		}
 	case opText:
-		if !utf8.Valid(buf.m.Bytes()[buf.m.Len()-int(buf.h.Length):]) {
+		if !utf8.Valid(buffer.Bytes()[buffer.Len()-int(buf.h.Length):]) {
 			return 0, ErrInvalidPayloadEncoding
 		}
 	}
@@ -463,13 +514,11 @@ func (l *listener) error(err error, isFatal bool) {
 	}
 }
 
-func (l *listener) pongWs(conn *Conn) error {
-	buf := conn.acquireReadBuffer()
-
+func (l *listener) pongWs(conn *Conn, buf *rbuf) error {
 	hd, err := l.codec.BuildHeader(header{
 		OpCode: opPong,
 		Fin:    true,
-		Length: int64(buf.m.Len()),
+		Length: int64(buf.f.Len()),
 	})
 
 	if err != nil {
@@ -482,7 +531,7 @@ func (l *listener) pongWs(conn *Conn) error {
 	// payload in one syscall
 	b := net.Buffers{
 		hd,
-		buf.m.Bytes(),
+		buf.f.Bytes(),
 	}
 
 	// write directly to the connection

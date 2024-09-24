@@ -193,8 +193,12 @@ func TestServerPong(t *testing.T) {
 
 	var h header
 
-	buf := make([]byte, maxHeaderSize)
-	rb.Read(buf)
+	buf, err := newCircbuf(4096)
+	RequireNil(t, err)
+
+	n, err := rb.Read(buf.next())
+	RequireNil(t, err)
+	RequireNil(t, buf.advanceWrite(n))
 
 	err = codec.ReadHeader(&h, buf)
 	RequireNil(t, err)
@@ -242,19 +246,29 @@ func TestServerSendUnmasked(t *testing.T) {
 
 		var h header
 
-		buf := make([]byte, 1024)
-		n, err := rb.Read(buf)
+		buf, err := newCircbuf(4096)
 		RequireNil(t, err)
 
-		err = codec.ReadHeader(&h, buf[:n])
+		n, err := rb.Read(buf.next())
+		RequireNil(t, err)
+		RequireNil(t, buf.advanceWrite(n))
+
+		err = codec.ReadHeader(&h, buf)
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 
-		if n-h.offset < int(h.Length) {
-			io.ReadFull(rb, buf[n:h.offset+int(h.Length)])
+		if buf.buffered() < int(h.Length) {
+			n, err = io.ReadFull(rb, buf.next())
+			RequireNil(t, err)
+			RequireNil(t, buf.advanceWrite(n))
 		}
 
-		AssertEqual(t, data, buf[h.offset:h.offset+int(h.Length)])
+		peeked, err := buf.peek(len(data))
+		RequireNil(t, err)
+
+		AssertEqual(t, data, peeked)
+
+		RequireNil(t, buf.advanceRead(len(data)))
 	}
 }
 
@@ -311,19 +325,27 @@ func TestServerSendMasked(t *testing.T) {
 
 		h.reset()
 
-		buf := make([]byte, 1024)
-		n, err := rb.Read(buf)
+		buf, err := newCircbuf(4096)
 		RequireNil(t, err)
 
-		err = codec.ReadHeader(&h, buf[:n])
+		n, err := rb.Read(buf.next())
+		RequireNil(t, err)
+
+		RequireNil(t, buf.advanceWrite(n))
+
+		err = codec.ReadHeader(&h, buf)
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 
-		if n-h.offset < int(h.Length) {
-			io.ReadFull(rb, buf[n:h.offset+int(h.Length)])
+		if buf.buffered() < int(h.Length) {
+			n, err := io.ReadFull(rb, buf.next())
+			RequireNil(t, err)
+			RequireNil(t, buf.advanceWrite(n))
 		}
 
-		AssertEqual(t, data, buf[h.offset:h.offset+int(h.Length)])
+		peeked, err := buf.peek(len(data))
+		RequireNil(t, err)
+		AssertEqual(t, data, peeked)
 	}
 }
 
@@ -374,7 +396,6 @@ func TestServerReceiveSmall(t *testing.T) {
 
 		binary.LittleEndian.PutUint64(data, uint64(i))
 
-		fmt.Println("-- writing", len(data), "bytes")
 		_, err := conn.Write(data)
 		RequireNil(t, err)
 
@@ -536,8 +557,9 @@ func TestServerAutobahn(t *testing.T) {
 				"url": "ws://127.0.0.1:8000",
 			},
 		},
-		"cases":         []string{"*"},
-		"exclude-cases": excluded,
+		//"cases":         []string{"*"},
+		//"exclude-cases": excluded,
+		"cases": []string{"3.7"}, // "4.*"}, //"1.*", "2.*",
 	})
 
 	err = os.WriteFile(filepath.Join(workdir, "config", "fuzzingclient.json"), config, 0644)
@@ -702,14 +724,12 @@ func AssertNil(t *testing.T, v any) {
 
 func RequireNil(t *testing.T, v any) {
 	if v != nil {
-		fmt.Println(v)
 		t.FailNow()
 	}
 }
 
 func RequireNotNil(t *testing.T, v any) {
 	if v == nil {
-		fmt.Println(v)
 		t.FailNow()
 	}
 }

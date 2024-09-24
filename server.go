@@ -123,8 +123,14 @@ func New(handler *Handler, opts ...option) *Server {
 
 	s.rbuffers = sync.Pool{
 		New: func() any {
+			cbuf, err := newCircbuf(s.readBufferSize)
+			if err != nil {
+				panic(err)
+			}
+
 			return &rbuf{
-				f: make([]byte, 0, s.readBufferSize),
+				b: cbuf,
+				f: bytes.NewBuffer(make([]byte, 0, 64)),
 				m: bytes.NewBuffer(make([]byte, 0, s.readBufferSize)),
 			}
 		},
@@ -224,7 +230,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	}
 
 	// wrap our read buffer in a temporary bufio reader
-	rb.Reset(bytes.NewBuffer(buf.f))
+	rb.Reset(buf.b)
 
 	// https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.1
 	r, err := http.ReadRequest(rb)
@@ -326,8 +332,6 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	if err != nil {
 		return err
 	}
-
-	buf.f = buf.f[:0]
 
 	return nil
 }

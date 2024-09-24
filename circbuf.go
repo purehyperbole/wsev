@@ -2,7 +2,6 @@ package wsev
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"runtime"
 	"syscall"
@@ -94,8 +93,26 @@ func newCircbuf(size int) (*circbuf, error) {
 	}
 
 	runtime.SetFinalizer(c, func(c *circbuf) {
+		err := munmap(c.address+uintptr(c.size), uintptr(c.size))
+		if err != nil {
+			panic(err)
+		}
+
+		err = munmap(c.address, uintptr(c.size))
+		if err != nil {
+			panic(err)
+		}
+
 		// TODO cleanup mappings...
-		fmt.Println("CIRCBUF FINALIZER CALLED")
+		err = munmap(c.address, uintptr(c.size*2))
+		if err != nil {
+			panic(err)
+		}
+
+		err = unix.Close(c.fd)
+		if err != nil {
+			panic(err)
+		}
 	})
 
 	return c, nil
@@ -137,6 +154,14 @@ func (b *circbuf) next() []byte {
 	)
 }
 
+func (b *circbuf) Read(data []byte) (int, error) {
+	if len(data) < b.buffered() {
+		return len(data), b.read(data)
+	}
+
+	return b.buffered(), b.read(data[:b.buffered()])
+}
+
 func (b *circbuf) read(data []byte) error {
 	if b.tail-b.head < len(data) {
 		return errBufferEmpty
@@ -169,7 +194,7 @@ func (b *circbuf) peek(size int) ([]byte, error) {
 	), nil
 }
 
-func (b *circbuf) advance(count int) error {
+func (b *circbuf) advanceRead(count int) error {
 	if b.tail-b.head < count {
 		return errBufferEmpty
 	}
@@ -184,6 +209,20 @@ func (b *circbuf) advance(count int) error {
 	return nil
 }
 
+func (b *circbuf) advanceWrite(count int) error {
+	if b.size-(b.tail-b.head) < count {
+		return errBufferFull
+	}
+
+	b.tail = b.tail + count
+
+	return nil
+}
+
+func (b *circbuf) reset() {
+	b.head = b.tail
+}
+
 func mmap(addr uintptr, length uintptr, prot int, flags int, fd int, offset int64) (uintptr, error) {
 	var r0 uintptr
 	var e1 syscall.Errno
@@ -195,6 +234,11 @@ func mmap(addr uintptr, length uintptr, prot int, flags int, fd int, offset int6
 	}
 
 	return uintptr(r0), errnoErr(e1)
+}
+
+func munmap(addr, length uintptr) error {
+	_, _, e1 := syscall.Syscall(syscall.SYS_MUNMAP, uintptr(addr), uintptr(length), 0)
+	return errnoErr(e1)
 }
 
 var (

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -23,8 +22,8 @@ const (
 // holds a reader, frame and message buffer
 type rbuf struct {
 	h header
-	f []byte
-	//f *bytes.Buffer
+	b *circbuf
+	f *bytes.Buffer
 	m *bytes.Buffer
 }
 
@@ -232,12 +231,12 @@ func (c *Conn) buffer() error {
 	buf := c.acquireReadBuffer()
 
 	// check our buffer isnt full
-	if len(buf.f) == cap(buf.f) {
+	if buf.b.full() {
 		return bufio.ErrBufferFull
 	}
 
 	// read some data into our read buffer
-	n, err := syscall.Read(c.fd, buf.f[len(buf.f):cap(buf.f)])
+	n, err := syscall.Read(c.fd, buf.b.next())
 	if err != nil {
 		return err
 	}
@@ -246,12 +245,9 @@ func (c *Conn) buffer() error {
 		return io.EOF
 	}
 
-	fmt.Println(">> buffered", n, "into", len(buf.f), cap(buf.f))
-
-	// reslice our buffer to account for the new bytes
-	buf.f = buf.f[:len(buf.f)+n]
-
-	return nil
+	// advance our buffers write position
+	// by the number of bytes we've just read
+	return buf.b.advanceWrite(n)
 }
 
 func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, error)) (int, error) {
@@ -343,21 +339,20 @@ func (c *Conn) acquireReadBuffer() *rbuf {
 }
 
 func (c *Conn) releaseReadBuffer() {
-	if c.readbuf != nil {
+	if c.readbuf == nil {
 		return
 	}
 
-	fmt.Println("releasing buffer")
-
-	c.readbuf.f = c.readbuf.f[:0]
 	c.readbuf.h.reset()
+	c.readbuf.b.reset()
+	c.readbuf.f.Reset()
 	c.readbuf.m.Reset()
 	c.readbufpool.Put(c.readbuf)
 	c.readbuf = nil
 }
 
 func (c *Conn) tryReleaseReadBuffer() {
-	if c.readbuf != nil && len(c.readbuf.f) > 0 {
+	if c.readbuf == nil || c.readbuf.h.remaining > 0 || c.readbuf.b.buffered() > 0 || c.readbuf.f.Len() > 0 || c.readbuf.m.Len() > 0 {
 		return
 	}
 

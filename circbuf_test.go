@@ -80,7 +80,7 @@ func TestCircbuf(t *testing.T) {
 	AssertEqual(t, valueB, peeked)
 
 	// advance after peeking data
-	RequireNil(t, buf.advance(len(peeked)))
+	RequireNil(t, buf.advanceRead(len(peeked)))
 
 	// read all the data again
 	for i := 0; i < written-2; i++ {

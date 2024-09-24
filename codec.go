@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"syscall"
 )
 
 // ------------------------------------------------------------------------------ //
@@ -83,14 +82,13 @@ func init() {
 // Header represents websocket frame header.
 // See https://tools.ietf.org/html/rfc6455#section-5.2
 type header struct {
-	Fin      bool
-	Rsv      byte
-	OpCode   opCode
-	Masked   bool
-	Mask     [4]byte
-	Length   int64
-	offset   int
-	received int64
+	Fin       bool
+	Rsv       byte
+	OpCode    opCode
+	Masked    bool
+	Mask      [4]byte
+	Length    int64
+	remaining int
 }
 
 func (h *header) isControl() bool {
@@ -124,16 +122,21 @@ func newWriteCodec() *codec {
 
 // ReadHeader reads a frame header from r.
 // ported from gobwas/ws to support reuse of the allocated frame header
-func (c *codec) ReadHeader(h *header, b []byte) error {
+func (c *codec) ReadHeader(h *header, cb *circbuf) error {
 	// check if there is an existing header
-	if h.Length > 0 {
+	if h.remaining > 0 {
 		return nil
 	}
 
-	// Check we have enough bytes in the buffer, if not return EAGAIN
-	// Until we have enough data...
+	b, err := cb.peek(cb.buffered())
+	if err != nil {
+		return err
+	}
+
 	if len(b) < 2 {
-		return syscall.EAGAIN
+		// If we don't have enough bytes in the buffer
+		// to read the header, wait...
+		return ErrDataNeeded
 	}
 
 	h.Fin = b[0]&bit0 != 0
@@ -163,13 +166,13 @@ func (c *codec) ReadHeader(h *header, b []byte) error {
 	}
 
 	if extra == 0 {
-		h.offset = 2
-		return nil
+		h.remaining = int(h.Length)
+		return cb.advanceRead(2)
 	}
 
-	if len(b) < extra {
+	if len(b) < 2+extra {
 		// We don't have enough data buffered to read the extra header bytes
-		return syscall.EAGAIN
+		return ErrDataNeeded
 	}
 
 	switch {
@@ -193,10 +196,8 @@ func (c *codec) ReadHeader(h *header, b []byte) error {
 		}
 	}
 
-	h.offset = 2 + extra
-
-	// return the header's size as an offset
-	return nil
+	h.remaining = int(h.Length)
+	return cb.advanceRead(2 + extra)
 }
 
 // WriteHeader writes header binary representation into w.
