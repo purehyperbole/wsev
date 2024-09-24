@@ -284,6 +284,8 @@ func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
 		if l.handler.OnPong != nil {
 			l.handler.OnPong(conn)
 		}
+
+		buf.f.Reset()
 	case opContinuation:
 		return nil
 	}
@@ -296,10 +298,6 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 	err := l.codec.ReadHeader(&buf.h, buf.b)
 	if err != nil {
 		return 0, err
-	}
-
-	if buf.h.remaining == int(buf.h.Length) {
-		//fmt.Println("NEW HEADER", conn.fd, buf.b.buffered(), buf.h)
 	}
 
 	// validate this frame after we have read data to avoid
@@ -417,15 +415,6 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 			0,
 		)
 	}
-
-	/*
-		if !buf.h.Fin {
-			// this is a continuation frame, so wait
-			// for more data to arrive so we can build
-			// the full message
-			return 0, ErrDataNeeded
-		}
-	*/
 
 	// validate the payload
 	switch buf.h.OpCode {

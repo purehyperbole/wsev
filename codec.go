@@ -136,7 +136,6 @@ func (c *codec) ReadHeader(h *header, cb *circbuf) error {
 	if len(b) < 2 {
 		// If we don't have enough bytes in the buffer
 		// to read the header, wait...
-		//fmt.Println("NOT ENOUGH DATA (1)", len(b))
 		return ErrDataNeeded
 	}
 
@@ -173,7 +172,6 @@ func (c *codec) ReadHeader(h *header, cb *circbuf) error {
 
 	if len(b) < 2+extra {
 		// We don't have enough data buffered to read the extra header bytes
-		//fmt.Println("NOT ENOUGH DATA (2)", len(b))
 		return ErrDataNeeded
 	}
 
