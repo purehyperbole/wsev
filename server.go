@@ -236,7 +236,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	// check the client is running at least HTTP/1.1
 	if !r.ProtoAtLeast(1, 1) {
 		return writeHeader(
-			conn,
+			conn.Conn,
 			http.StatusUpgradeRequired,
 			errors.New("unsupported client http version"),
 		)
@@ -245,7 +245,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	// check this is a get request
 	if r.Method != http.MethodGet {
 		return writeHeader(
-			conn,
+			conn.Conn,
 			http.StatusUpgradeRequired,
 			errors.New("unsupported http method"),
 		)
@@ -254,7 +254,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	// check request header contains the 'Connection: Upgrade' and 'Upgrade: websocket' headers
 	if !strings.EqualFold(h.Get("Connection"), "upgrade") && !strings.EqualFold(h.Get("Upgrade"), "websocket") {
 		return writeHeader(
-			conn,
+			conn.Conn,
 			http.StatusUpgradeRequired,
 			errors.New("invalid upgrade headers"),
 		)
@@ -264,7 +264,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	socketKey, err := enc.DecodeString(h.Get("Sec-WebSocket-Key"))
 	if err != nil {
 		writeHeader(
-			conn,
+			conn.Conn,
 			http.StatusUpgradeRequired,
 			errors.New("invalid Sec-Websocket-Key base64"),
 		)
@@ -273,7 +273,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	// check Sec-WebSocket-Key is at least 16 bytes
 	if len(socketKey) != 16 {
 		return writeHeader(
-			conn,
+			conn.Conn,
 			http.StatusUpgradeRequired,
 			errors.New("invalid Sec-Websocket-Key base64 length"),
 		)
@@ -282,7 +282,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	// check the client is running websocket version 13
 	if h.Get("Sec-WebSocket-Version") != "13" {
 		return writeHeader(
-			conn,
+			conn.Conn,
 			http.StatusUpgradeRequired,
 			errors.New("invalid Sec-Websocket-Key base64 length"),
 		)
@@ -293,7 +293,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 		o, err := url.Parse(origin)
 		if err != nil {
 			return writeHeader(
-				conn,
+				conn.Conn,
 				http.StatusForbidden,
 				errors.New("invalid Origin header"),
 			)
@@ -301,7 +301,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 
 		if o.Host != r.Host {
 			return writeHeader(
-				conn,
+				conn.Conn,
 				http.StatusForbidden,
 				errors.New("origin header does not match hostname"),
 			)
