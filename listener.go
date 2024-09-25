@@ -545,13 +545,13 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 		}
 	}
 
-	conn.releaseReadBuffer()
-
 	// delete the connection from our connection list
 	_, ok := l.conns.LoadAndDelete(fd)
 	if !ok {
 		return
 	}
+
+	conn.releaseReadBuffer()
 
 	if conn.heapindex > HeapRemoved {
 		// if this hasn't been removed from the heap
