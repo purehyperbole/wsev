@@ -557,9 +557,8 @@ func TestServerAutobahn(t *testing.T) {
 				"url": "ws://127.0.0.1:8000",
 			},
 		},
-		//"cases":         []string{"*"},
-		//"exclude-cases": excluded,
-		"cases": []string{"*"},
+		"cases":         []string{"*"},
+		"exclude-cases": excluded,
 	})
 
 	err = os.WriteFile(filepath.Join(workdir, "config", "fuzzingclient.json"), config, 0644)

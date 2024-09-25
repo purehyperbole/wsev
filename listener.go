@@ -165,7 +165,7 @@ func (l *listener) handleEvents() {
 			// read until there is no more data in the read buffer.
 			// limit this to a maximum amount so we don't get
 			// dominated by a single connection
-			for buf.b.buffered() > 0 || iters <= 10 {
+			for !cn.closed() && buf.b.buffered() > 0 || iters <= 10 {
 				// upgrade the connection and write upgrade negotiation
 				// response directly to underlying connection
 				if cn.upgrade() {
@@ -214,6 +214,10 @@ func (l *listener) handleEvents() {
 }
 
 func (l *listener) read(fd int32, conn *Conn, buf *rbuf) error {
+	if conn.closed() {
+		return ErrConnectionAlreadyClosed
+	}
+
 	op, err := l.assembleFrame(conn, buf)
 	if err != nil {
 		ce, ok := err.(*closeError)
@@ -544,6 +548,8 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	if !ok {
 		return
 	}
+
+	conn.releaseReadBuffer()
 
 	if conn.heapindex > HeapRemoved {
 		// if this hasn't been removed from the heap
