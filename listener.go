@@ -533,23 +533,25 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	// tell epoll we don't need to monitor this connection anymore
 	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_DEL, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
+		if !errors.Is(err, syscall.EBADFD) && !errors.Is(err, os.ErrNotExist) {
 			l.error(err, false)
 		}
 	}
 
 	err = conn.Close()
 	if err != nil {
-		l.error(err, false)
+		if !errors.Is(err, net.ErrClosed) {
+			l.error(err, false)
+		}
 	}
+
+	conn.releaseReadBuffer()
 
 	// delete the connection from our connection list
 	_, ok := l.conns.LoadAndDelete(fd)
 	if !ok {
 		return
 	}
-
-	conn.releaseReadBuffer()
 
 	if conn.heapindex > HeapRemoved {
 		// if this hasn't been removed from the heap

@@ -222,13 +222,6 @@ func (s *Server) error(err error, isFatal bool) {
 }
 
 func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
-	// http headers should be small enough to arrive in a single
-	// packet, so this will be unlikely to time out
-	err := conn.Conn.SetReadDeadline(time.Now().Add(time.Second))
-	if err != nil {
-		return err
-	}
-
 	// wrap our read buffer in a temporary bufio reader
 	rb.Reset(buf.b)
 
@@ -349,8 +342,9 @@ func connectionFd(conn net.Conn) int {
 func writeHeader(conn net.Conn, status int, err error) error {
 	_, _ = fmt.Fprintf(
 		conn,
-		"HTTP/1.1 %d Switching Protocols\r\n\r\n",
+		"HTTP/1.1 %d %s\r\n\r\n",
 		status,
+		http.StatusText(status),
 	)
 	return err
 }
