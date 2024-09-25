@@ -46,6 +46,9 @@ func TestServerConnect(t *testing.T) {
 
 	s := New(
 		&Handler{
+			OnError: func(err error, fatal bool) {
+				//fmt.Println(err)
+			},
 			OnConnect: func(conn *Conn) {
 				opench <- &testevent{conn: conn}
 			},
@@ -188,7 +191,16 @@ func TestServerPong(t *testing.T) {
 	RequireNil(t, timeout(pingch, time.Millisecond*100))
 	conn.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
 
-	h, err := codec.ReadHeader(rb)
+	var h header
+
+	buf, err := newCircbuf(4096)
+	RequireNil(t, err)
+
+	n, err := rb.Read(buf.next())
+	RequireNil(t, err)
+	RequireNil(t, buf.advanceWrite(n))
+
+	err = codec.ReadHeader(&h, buf)
 	RequireNil(t, err)
 	AssertEqual(t, opPong, h.OpCode)
 	AssertTrue(t, h.Fin)
@@ -232,13 +244,31 @@ func TestServerSendUnmasked(t *testing.T) {
 		_, err := (*send).conn.Write(data)
 		RequireNil(t, err)
 
-		h, err := codec.ReadHeader(rb)
+		var h header
+
+		buf, err := newCircbuf(4096)
+		RequireNil(t, err)
+
+		n, err := rb.Read(buf.next())
+		RequireNil(t, err)
+		RequireNil(t, buf.advanceWrite(n))
+
+		err = codec.ReadHeader(&h, buf)
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 
-		rdata := make([]byte, h.Length)
-		io.ReadFull(rb, rdata)
-		AssertEqual(t, data, rdata)
+		if buf.buffered() < int(h.Length) {
+			n, err = io.ReadFull(rb, buf.next())
+			RequireNil(t, err)
+			RequireNil(t, buf.advanceWrite(n))
+		}
+
+		peeked, err := buf.peek(len(data))
+		RequireNil(t, err)
+
+		AssertEqual(t, data, peeked)
+
+		RequireNil(t, buf.advanceRead(len(data)))
 	}
 }
 
@@ -293,13 +323,29 @@ func TestServerSendMasked(t *testing.T) {
 		_, err := (*send).conn.(*Conn).Conn.Write(data)
 		RequireNil(t, err)
 
-		h, err = codec.ReadHeader(rb)
+		h.reset()
+
+		buf, err := newCircbuf(4096)
+		RequireNil(t, err)
+
+		n, err := rb.Read(buf.next())
+		RequireNil(t, err)
+
+		RequireNil(t, buf.advanceWrite(n))
+
+		err = codec.ReadHeader(&h, buf)
 		RequireNil(t, err)
 		AssertEqual(t, int64(8), h.Length)
 
-		rdata := make([]byte, h.Length)
-		io.ReadFull(rb, rdata)
-		AssertEqual(t, data, rdata)
+		if buf.buffered() < int(h.Length) {
+			n, err := io.ReadFull(rb, buf.next())
+			RequireNil(t, err)
+			RequireNil(t, buf.advanceWrite(n))
+		}
+
+		peeked, err := buf.peek(len(data))
+		RequireNil(t, err)
+		AssertEqual(t, data, peeked)
 	}
 }
 
@@ -352,11 +398,8 @@ func TestServerReceiveSmall(t *testing.T) {
 
 		_, err := conn.Write(data)
 		RequireNil(t, err)
-		start := time.Now()
+
 		err = timeout(msgchan, time.Millisecond*500)
-		if err != nil {
-			fmt.Println(err, counter, time.Since(start))
-		}
 		RequireNil(t, err)
 	}
 }
@@ -680,6 +723,12 @@ func AssertNil(t *testing.T, v any) {
 
 func RequireNil(t *testing.T, v any) {
 	if v != nil {
+		t.FailNow()
+	}
+}
+
+func RequireNotNil(t *testing.T, v any) {
+	if v == nil {
 		t.FailNow()
 	}
 }
