@@ -523,8 +523,12 @@ func (l *listener) pongWs(conn *Conn, buf *rbuf) error {
 		buf.f.Bytes(),
 	}
 
+	conn.mutex.Lock()
 	// write directly to the connection
+	// we lock this to avoid interleaved
+	// writes to the underlying tcp conn
 	_, err = b.WriteTo(conn.Conn)
+	conn.mutex.Unlock()
 
 	return err
 }
