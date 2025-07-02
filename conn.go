@@ -50,6 +50,7 @@ type Conn struct {
 	iscontinuation int32              // marks a continuation frame
 	isclosed       int32              // marks a connection as closed
 	upgraded       int32              // marks the connection been upgraded
+	xforwardedfor  string             // x-forwarded-for from request headers
 	scheduled      bool               // marks for flush scheduling
 }
 
@@ -223,6 +224,11 @@ func (c *Conn) Get() any {
 // Set sets a user specified value
 func (c *Conn) Set(value any) {
 	c.value = value
+}
+
+// XForwardedFor returns the value for X-Forwarded-For from the initial requests header
+func (c *Conn) XForwardedFor() string {
+	return c.xforwardedfor
 }
 
 func (c *Conn) buffer() error {

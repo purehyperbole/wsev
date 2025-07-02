@@ -233,6 +233,8 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 
 	h := r.Header
 
+	conn.xforwardedfor = h.Get("X-Forwarded-For")
+
 	// check the client is running at least HTTP/1.1
 	if !r.ProtoAtLeast(1, 1) {
 		return writeHeader(
