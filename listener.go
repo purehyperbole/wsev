@@ -165,7 +165,7 @@ func (l *listener) handleEvents() {
 			// read until there is no more data in the read buffer.
 			// limit this to a maximum amount so we don't get
 			// dominated by a single connection
-			for !cn.closed() && buf.b.buffered() > 0 || iters <= 10 {
+			for !cn.closed() && (buf.b.buffered() > 0 || iters <= 10) {
 				// upgrade the connection and write upgrade negotiation
 				// response directly to underlying connection
 				if cn.upgrade() {

@@ -86,6 +86,11 @@ func (c *Conn) WriteText(s string) (int, error) {
 // CloseWith writes all existing buffered state and sends close frame to the connection.
 // if disconnect is specified as true, the underlying connection will be closed immediately
 func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) error {
+	// try to mark our connection as closed
+	if !c.close() {
+		return ErrConnectionAlreadyClosed
+	}
+
 	c.mutex.Lock()
 
 	defer func() {
@@ -101,11 +106,6 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 		c.releaseReadBuffer()
 		c.mutex.Unlock()
 	}()
-
-	// try to mark our connection as closed
-	if !c.close() {
-		return ErrConnectionAlreadyClosed
-	}
 
 	// if we don't have a write buffer, then get one from the pool
 	if c.writebuf == nil {
@@ -155,6 +155,11 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 // CloseImmediatelyWith sends close frame to the connection immediately, discarding any buffered state.
 // if disconnect is specified as true, the underlying connection will be closed immediately
 func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnect bool) error {
+	// try to mark our connection as closed
+	if !c.close() {
+		return ErrConnectionAlreadyClosed
+	}
+
 	c.mutex.Lock()
 
 	defer func() {
@@ -171,11 +176,6 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 		c.releaseReadBuffer()
 		c.mutex.Unlock()
 	}()
-
-	// try to mark our connection as closed
-	if !c.close() {
-		return ErrConnectionAlreadyClosed
-	}
 
 	hd, err := newWriteCodec().BuildHeader(header{
 		OpCode: opClose,
