@@ -84,12 +84,12 @@ type listener struct {
 	timermu       sync.Mutex
 	conns         sync.Map
 	socket        net.Listener
-	_p1           [8]uint64
 	readDeadline  time.Duration
 	flushDeadline time.Duration
 	writebufsize  int
 	counter       int
 	fd            int
+	//_p1           [8]uint64
 }
 
 func newListener(epollFd int, handler *Handler, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline time.Duration, writebufsize int) *listener {
@@ -203,10 +203,10 @@ func (l *listener) handleEvents() {
 
 			cn.tryReleaseReadBuffer()
 
-			if cn.heapindex > HeapRemoved {
+			if cn.heapindex.Load() > HeapRemoved {
 				// reset the timer on the connection
 				l.timermu.Lock()
-				l.timerheap.decrease(cn, now)
+				l.timerheap.increase(cn, now)
 				l.timermu.Unlock()
 			}
 		}
@@ -557,7 +557,7 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 
 	conn.releaseReadBuffer()
 
-	if conn.heapindex > HeapRemoved {
+	if conn.heapindex.Load() > HeapRemoved {
 		// if this hasn't been removed from the heap
 		// remove it
 		l.timermu.Lock()

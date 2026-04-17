@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	HeapRemoved    = -1
-	HeapUnassigned = -2
+	HeapRemoved    int32 = -1
+	HeapUnassigned int32 = -2
 )
 
 // holds a reader, frame and message buffer
@@ -46,7 +46,7 @@ type Conn struct {
 	quit           func(*Conn, error) // quit callback
 	flush          time.Duration      // flush interval
 	mutex          sync.Mutex         // write buffer lock
-	heapindex      int                // index of this connection in timer heap
+	heapindex      atomic.Int32       // index of this connection in timer heap
 	iscontinuation int32              // marks a continuation frame
 	isclosed       int32              // marks a connection as closed
 	upgraded       int32              // marks the connection been upgraded
@@ -54,15 +54,18 @@ type Conn struct {
 }
 
 func newBufConn(conn net.Conn, readbufpool, writebufpool *sync.Pool, flush time.Duration, shutdownCallback func(*Conn, error)) *Conn {
-	return &Conn{
+	c := &Conn{
 		Conn:         conn,
 		fd:           connectionFd(conn),
 		readbufpool:  readbufpool,
 		writebufpool: writebufpool,
 		flush:        flush,
 		quit:         shutdownCallback,
-		heapindex:    HeapUnassigned,
 	}
+
+	c.heapindex.Store(HeapUnassigned)
+
+	return c
 }
 
 // Write writes binary data to the connection via a buffer
