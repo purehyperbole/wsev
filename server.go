@@ -149,9 +149,16 @@ func New(handler *Handler, opts ...option) *Server {
 }
 
 func (s *Server) Serve(port int) error {
+	cleanup := func(listeners []*listener) {
+		for i := 0; i < len(listeners); i++ {
+			unix.Close(listeners[i].fd)
+		}
+	}
+
 	for i := 0; i < len(s.listeners); i++ {
 		fd, err := unix.EpollCreate1(0)
 		if err != nil {
+			cleanup(s.listeners[:i])
 			return err
 		}
 
@@ -184,6 +191,7 @@ func (s *Server) Serve(port int) error {
 
 		s.listeners[i].socket, err = lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
+			cleanup(s.listeners[:i])
 			return err
 		}
 
@@ -192,7 +200,7 @@ func (s *Server) Serve(port int) error {
 				conn, err := s.listeners[pid].socket.Accept()
 				if err != nil {
 					s.error(err, true)
-					continue
+					return
 				}
 
 				s.listeners[pid].register(connectionFd(conn), conn)
