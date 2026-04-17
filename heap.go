@@ -9,7 +9,7 @@ type heap []entry
 
 func (h *heap) push(key int64, value *Conn) {
 	current := len(*h)
-	value.heapindex = current
+	value.heapindex.Store(int32(current))
 
 	*h = append(*h, entry{
 		key:   key,
@@ -29,7 +29,11 @@ func (h *heap) push(key int64, value *Conn) {
 }
 
 func (h *heap) delete(value *Conn) {
-	current := value.heapindex
+	current := int(value.heapindex.Load())
+	if current < 0 {
+		return
+	}
+
 	h.swap(current, len(*h)-1)
 
 	*h = (*h)[:len(*h)-1]
@@ -50,27 +54,32 @@ func (h *heap) delete(value *Conn) {
 		current = smallest
 	}
 
-	value.heapindex = HeapRemoved
+	value.heapindex.Store(HeapRemoved)
 }
 
-func (h *heap) decrease(value *Conn, key int64) {
-	current := value.heapindex
+func (h *heap) increase(value *Conn, key int64) {
+	current := int(value.heapindex.Load())
 
-	if value.heapindex < 0 {
+	if current < 0 {
 		return
 	}
 
 	(*h)[current].key = key
 
-	for h.hasParent(current) {
-		parent := parentIndex(current)
+	for h.hasLeftChild(current) {
+		smallest := leftChildIndex(current)
 
-		if (*h)[parent].key <= key {
-			break
+		if h.hasRightChild(current) && (*h)[rightChildIndex(current)].key < (*h)[smallest].key {
+			smallest = rightChildIndex(current)
 		}
 
-		h.swap(current, parent)
-		current = parent
+		if (*h)[current].key < (*h)[smallest].key {
+			break
+		} else {
+			h.swap(current, smallest)
+		}
+
+		current = smallest
 	}
 }
 
@@ -81,7 +90,7 @@ func (h *heap) pop() *Conn {
 
 	value := (*h)[0].value
 	(*h)[0] = (*h)[len(*h)-1]
-	(*h)[0].value.heapindex = 0
+	(*h)[0].value.heapindex.Store(0)
 	*h = (*h)[:len(*h)-1]
 
 	var current int
@@ -102,7 +111,7 @@ func (h *heap) pop() *Conn {
 		current = smallest
 	}
 
-	value.heapindex = HeapRemoved
+	value.heapindex.Store(HeapRemoved)
 
 	return value
 }
@@ -117,8 +126,8 @@ func (h *heap) popIf(cond int64) *Conn {
 
 func (h *heap) swap(a, b int) {
 	// swap the index values on the connection
-	(*h)[a].value.heapindex = b
-	(*h)[b].value.heapindex = a
+	(*h)[a].value.heapindex.Store(int32(b))
+	(*h)[b].value.heapindex.Store(int32(a))
 
 	(*h)[a], (*h)[b] = (*h)[b], (*h)[a]
 }
@@ -133,10 +142,6 @@ func (h *heap) hasLeftChild(index int) bool {
 
 func (h *heap) hasRightChild(index int) bool {
 	return rightChildIndex(index) < len(*h)
-}
-
-func (h *heap) hasParent(index int) bool {
-	return parentIndex(index) > 0
 }
 
 func leftChildIndex(index int) int {

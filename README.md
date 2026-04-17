@@ -43,8 +43,8 @@ func main() {
         OnPing: func(conn *wsev.Conn) {
             // client has sent pong
         },
-        OnMessage: func(conn *wsev.Conn, msg []byte) {
-            // client has sent a binary/text event
+        OnBinary: func(conn *wsev.Conn, msg []byte) {
+            // client has sent a binary
         },
         OnError: func(err error, isFatal bool) {
             // server has experienced an error
@@ -119,7 +119,7 @@ func main() {
                 }
             }
         },
-        OnMessage: func(conn *wsev.Conn, msg []byte) {
+        OnBinary: func(conn *wsev.Conn, msg []byte) {
             // a message has been recevied, broadcast it to the other connections
             lock.Lock()
             defer lock.Unlock()

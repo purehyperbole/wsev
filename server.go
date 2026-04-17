@@ -149,9 +149,16 @@ func New(handler *Handler, opts ...option) *Server {
 }
 
 func (s *Server) Serve(port int) error {
+	cleanup := func(listeners []*listener) {
+		for i := 0; i < len(listeners); i++ {
+			unix.Close(listeners[i].fd)
+		}
+	}
+
 	for i := 0; i < len(s.listeners); i++ {
 		fd, err := unix.EpollCreate1(0)
 		if err != nil {
+			cleanup(s.listeners[:i])
 			return err
 		}
 
@@ -184,6 +191,7 @@ func (s *Server) Serve(port int) error {
 
 		s.listeners[i].socket, err = lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
+			cleanup(s.listeners[:i])
 			return err
 		}
 
@@ -192,7 +200,7 @@ func (s *Server) Serve(port int) error {
 				conn, err := s.listeners[pid].socket.Accept()
 				if err != nil {
 					s.error(err, true)
-					continue
+					return
 				}
 
 				s.listeners[pid].register(connectionFd(conn), conn)
@@ -252,7 +260,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	}
 
 	// check request header contains the 'Connection: Upgrade' and 'Upgrade: websocket' headers
-	if !strings.EqualFold(h.Get("Connection"), "upgrade") && !strings.EqualFold(h.Get("Upgrade"), "websocket") {
+	if !strings.EqualFold(h.Get("Connection"), "upgrade") || !strings.EqualFold(h.Get("Upgrade"), "websocket") {
 		return writeHeader(
 			conn.Conn,
 			http.StatusUpgradeRequired,
@@ -263,7 +271,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	// validate Sec-WebSocket-Key header
 	socketKey, err := enc.DecodeString(h.Get("Sec-WebSocket-Key"))
 	if err != nil {
-		writeHeader(
+		return writeHeader(
 			conn.Conn,
 			http.StatusUpgradeRequired,
 			errors.New("invalid Sec-Websocket-Key base64"),
@@ -284,7 +292,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 		return writeHeader(
 			conn.Conn,
 			http.StatusUpgradeRequired,
-			errors.New("invalid Sec-Websocket-Key base64 length"),
+			errors.New("invalid Sec-Websocket-Version"),
 		)
 	}
 
