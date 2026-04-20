@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	HeapRemoved    = -1
-	HeapUnassigned = -2
+	HeapRemoved    int32 = -1
+	HeapUnassigned int32 = -2
 )
 
 // holds a reader, frame and message buffer
@@ -46,7 +46,7 @@ type Conn struct {
 	quit           func(*Conn, error) // quit callback
 	flush          time.Duration      // flush interval
 	mutex          sync.Mutex         // write buffer lock
-	heapindex      int                // index of this connection in timer heap
+	heapindex      atomic.Int32       // index of this connection in timer heap
 	iscontinuation int32              // marks a continuation frame
 	isclosed       int32              // marks a connection as closed
 	upgraded       int32              // marks the connection been upgraded
@@ -55,15 +55,18 @@ type Conn struct {
 }
 
 func newBufConn(conn net.Conn, readbufpool, writebufpool *sync.Pool, flush time.Duration, shutdownCallback func(*Conn, error)) *Conn {
-	return &Conn{
+	c := &Conn{
 		Conn:         conn,
 		fd:           connectionFd(conn),
 		readbufpool:  readbufpool,
 		writebufpool: writebufpool,
 		flush:        flush,
 		quit:         shutdownCallback,
-		heapindex:    HeapUnassigned,
 	}
+
+	c.heapindex.Store(HeapUnassigned)
+
+	return c
 }
 
 // Write writes binary data to the connection via a buffer
@@ -87,6 +90,11 @@ func (c *Conn) WriteText(s string) (int, error) {
 // CloseWith writes all existing buffered state and sends close frame to the connection.
 // if disconnect is specified as true, the underlying connection will be closed immediately
 func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) error {
+	// try to mark our connection as closed
+	if !c.close() {
+		return ErrConnectionAlreadyClosed
+	}
+
 	c.mutex.Lock()
 
 	defer func() {
@@ -102,11 +110,6 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 		c.releaseReadBuffer()
 		c.mutex.Unlock()
 	}()
-
-	// try to mark our connection as closed
-	if !c.close() {
-		return ErrConnectionAlreadyClosed
-	}
 
 	// if we don't have a write buffer, then get one from the pool
 	if c.writebuf == nil {
@@ -147,7 +150,9 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 		// shutdown() to signal to the client the connection
 		// is being closed. conn.Close does not send a tcp FIN
 		// or FIN ACK packet. possibly a bug?)
-		return unix.Shutdown(connectionFd(c.Conn), unix.SHUT_RDWR)
+		err = unix.Shutdown(connectionFd(c.Conn), unix.SHUT_RDWR)
+		c.Conn.Close()
+		return err
 	}
 
 	return nil
@@ -156,6 +161,11 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 // CloseImmediatelyWith sends close frame to the connection immediately, discarding any buffered state.
 // if disconnect is specified as true, the underlying connection will be closed immediately
 func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnect bool) error {
+	// try to mark our connection as closed
+	if !c.close() {
+		return ErrConnectionAlreadyClosed
+	}
+
 	c.mutex.Lock()
 
 	defer func() {
@@ -172,11 +182,6 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 		c.releaseReadBuffer()
 		c.mutex.Unlock()
 	}()
-
-	// try to mark our connection as closed
-	if !c.close() {
-		return ErrConnectionAlreadyClosed
-	}
 
 	hd, err := newWriteCodec().BuildHeader(header{
 		OpCode: opClose,
@@ -210,7 +215,9 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 		// shutdown() to signal to the client the connection
 		// is being closed. conn.Close does not send a tcp FIN
 		// or FIN ACK packet. possibly a bug?)
-		return unix.Shutdown(connectionFd(c.Conn), unix.SHUT_RDWR)
+		err = unix.Shutdown(connectionFd(c.Conn), unix.SHUT_RDWR)
+		c.Conn.Close()
+		return err
 	}
 
 	return nil

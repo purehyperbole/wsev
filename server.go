@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -105,6 +104,7 @@ type Server struct {
 	writeBufferDeadline time.Duration
 	readBufferSize      int
 	writeBufferSize     int
+	epollEventSize      int
 }
 
 func New(handler *Handler, opts ...option) *Server {
@@ -113,8 +113,8 @@ func New(handler *Handler, opts ...option) *Server {
 		listeners:           make([]*listener, runtime.GOMAXPROCS(0)),
 		readDeadline:        DefaultReadDeadline,
 		writeBufferDeadline: DefaultBufferFlushDeadline,
-		writeBufferSize:     DefaultBufferSize,
 		readBufferSize:      DefaultBufferSize,
+		writeBufferSize:     DefaultBufferSize,
 	}
 
 	for i := range opts {
@@ -149,9 +149,16 @@ func New(handler *Handler, opts ...option) *Server {
 }
 
 func (s *Server) Serve(port int) error {
+	cleanup := func(listeners []*listener) {
+		for i := 0; i < len(listeners); i++ {
+			unix.Close(listeners[i].fd)
+		}
+	}
+
 	for i := 0; i < len(s.listeners); i++ {
 		fd, err := unix.EpollCreate1(0)
 		if err != nil {
+			cleanup(s.listeners[:i])
 			return err
 		}
 
@@ -184,6 +191,7 @@ func (s *Server) Serve(port int) error {
 
 		s.listeners[i].socket, err = lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
+			cleanup(s.listeners[:i])
 			return err
 		}
 
@@ -192,7 +200,7 @@ func (s *Server) Serve(port int) error {
 				conn, err := s.listeners[pid].socket.Accept()
 				if err != nil {
 					s.error(err, true)
-					continue
+					return
 				}
 
 				s.listeners[pid].register(connectionFd(conn), conn)
@@ -254,7 +262,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	}
 
 	// check request header contains the 'Connection: Upgrade' and 'Upgrade: websocket' headers
-	if !strings.EqualFold(h.Get("Connection"), "upgrade") && !strings.EqualFold(h.Get("Upgrade"), "websocket") {
+	if !strings.EqualFold(h.Get("Connection"), "upgrade") || !strings.EqualFold(h.Get("Upgrade"), "websocket") {
 		return writeHeader(
 			conn.Conn,
 			http.StatusUpgradeRequired,
@@ -265,7 +273,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	// validate Sec-WebSocket-Key header
 	socketKey, err := enc.DecodeString(h.Get("Sec-WebSocket-Key"))
 	if err != nil {
-		writeHeader(
+		return writeHeader(
 			conn.Conn,
 			http.StatusUpgradeRequired,
 			errors.New("invalid Sec-Websocket-Key base64"),
@@ -286,7 +294,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 		return writeHeader(
 			conn.Conn,
 			http.StatusUpgradeRequired,
-			errors.New("invalid Sec-Websocket-Key base64 length"),
+			errors.New("invalid Sec-Websocket-Version"),
 		)
 	}
 
@@ -332,13 +340,26 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 }
 
 func connectionFd(conn net.Conn) int {
-	// get the poll file descriptor via reflect
-	// os.File().Fd() doesn't return this sadly
-	tcpConn := reflect.Indirect(reflect.ValueOf(conn)).FieldByName("conn")
-	fdVal := tcpConn.FieldByName("fd")
-	pfdVal := reflect.Indirect(fdVal).FieldByName("pfd")
+	sc, ok := conn.(syscall.Conn)
+	if !ok {
+		return -1
+	}
 
-	return int(pfdVal.FieldByName("Sysfd").Int())
+	raw, err := sc.SyscallConn()
+	if err != nil {
+		return -1
+	}
+
+	var fd int
+	err = raw.Control(func(f uintptr) {
+		fd = int(f)
+	})
+
+	if err != nil {
+		return -1
+	}
+
+	return fd
 }
 
 func writeHeader(conn net.Conn, status int, err error) error {
