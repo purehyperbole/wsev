@@ -89,7 +89,6 @@ type listener struct {
 	writebufsize  int
 	counter       int
 	fd            int
-	//_p1           [8]uint64
 }
 
 func newListener(epollFd int, handler *Handler, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline time.Duration, writebufsize int) *listener {

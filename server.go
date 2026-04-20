@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -105,6 +104,7 @@ type Server struct {
 	writeBufferDeadline time.Duration
 	readBufferSize      int
 	writeBufferSize     int
+	epollEventSize      int
 }
 
 func New(handler *Handler, opts ...option) *Server {
@@ -113,8 +113,8 @@ func New(handler *Handler, opts ...option) *Server {
 		listeners:           make([]*listener, runtime.GOMAXPROCS(0)),
 		readDeadline:        DefaultReadDeadline,
 		writeBufferDeadline: DefaultBufferFlushDeadline,
-		writeBufferSize:     DefaultBufferSize,
 		readBufferSize:      DefaultBufferSize,
+		writeBufferSize:     DefaultBufferSize,
 	}
 
 	for i := range opts {
@@ -338,13 +338,26 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 }
 
 func connectionFd(conn net.Conn) int {
-	// get the poll file descriptor via reflect
-	// os.File().Fd() doesn't return this sadly
-	tcpConn := reflect.Indirect(reflect.ValueOf(conn)).FieldByName("conn")
-	fdVal := tcpConn.FieldByName("fd")
-	pfdVal := reflect.Indirect(fdVal).FieldByName("pfd")
+	sc, ok := conn.(syscall.Conn)
+	if !ok {
+		return -1
+	}
 
-	return int(pfdVal.FieldByName("Sysfd").Int())
+	raw, err := sc.SyscallConn()
+	if err != nil {
+		return -1
+	}
+
+	var fd int
+	err = raw.Control(func(f uintptr) {
+		fd = int(f)
+	})
+
+	if err != nil {
+		return -1
+	}
+
+	return fd
 }
 
 func writeHeader(conn net.Conn, status int, err error) error {
