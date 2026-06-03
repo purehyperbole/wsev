@@ -91,7 +91,7 @@ type listener struct {
 	fd            int
 }
 
-func newListener(epollFd int, handler *Handler, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline time.Duration, writebufsize int) *listener {
+func newListener(epollFd int, handler *Handler, eventCount int, pollWait time.Duration, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline time.Duration, writebufsize int) *listener {
 	l := &listener{
 		fd:            epollFd,
 		readDeadline:  readDeadline,
@@ -104,17 +104,17 @@ func newListener(epollFd int, handler *Handler, readbufpool, writebufpool *sync.
 		handler:       handler,
 	}
 
-	go l.handleEvents()
+	go l.handleEvents(eventCount, pollWait)
 
 	return l
 }
 
-func (l *listener) handleEvents() {
-	events := make([]syscall.EpollEvent, 128)
+func (l *listener) handleEvents(eventCount int, pollWait time.Duration) {
+	events := make([]syscall.EpollEvent, eventCount)
 
 	// wait for epoll to return some events
 	for {
-		ec, err := syscall.EpollWait(l.fd, events, 10)
+		ec, err := syscall.EpollWait(l.fd, events, int(pollWait.Milliseconds()))
 		if err != nil {
 			// ignore interupted syscall
 			if errors.Is(err, syscall.EINTR) {
