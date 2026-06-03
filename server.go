@@ -29,6 +29,8 @@ const (
 	DefaultBufferSize          = 1 << 14
 	DefaultBufferFlushDeadline = time.Millisecond * 50
 	DefaultReadDeadline        = time.Second
+	DefaultEpollWaitDeadline   = time.Millisecond * 10
+	DefaultEpollEventSize      = 128
 )
 
 type option func(s *Server)
@@ -70,6 +72,20 @@ func WithListeners(count int) option {
 	}
 }
 
+// WithEpollWaitDuration sets the time an epoll event iteration will wait until returning with the currently available events
+func WithEpollWaitDuration(duration time.Duration) option {
+	return func(s *Server) {
+		s.epollWaitDuration = duration
+	}
+}
+
+// WithEpollEventSize sets the size of the buffer that holds epoll events
+func WithEpollEventSize(size int) option {
+	return func(s *Server) {
+		s.epollEventSize = size
+	}
+}
+
 type Handler struct {
 	// OnConnect is invoked upon a new connection
 	OnConnect func(conn *Conn)
@@ -102,9 +118,10 @@ type Server struct {
 	listeners           []*listener
 	readDeadline        time.Duration
 	writeBufferDeadline time.Duration
+	epollWaitDuration   time.Duration
+	epollEventSize      int
 	readBufferSize      int
 	writeBufferSize     int
-	epollEventSize      int
 }
 
 func New(handler *Handler, opts ...option) *Server {
@@ -113,6 +130,8 @@ func New(handler *Handler, opts ...option) *Server {
 		listeners:           make([]*listener, runtime.GOMAXPROCS(0)),
 		readDeadline:        DefaultReadDeadline,
 		writeBufferDeadline: DefaultBufferFlushDeadline,
+		epollEventSize:      DefaultEpollEventSize,
+		epollWaitDuration:   DefaultEpollWaitDeadline,
 		readBufferSize:      DefaultBufferSize,
 		writeBufferSize:     DefaultBufferSize,
 	}
@@ -165,6 +184,8 @@ func (s *Server) Serve(port int) error {
 		s.listeners[i] = newListener(
 			fd,
 			s.handler,
+			s.epollEventSize,
+			s.epollWaitDuration,
 			&s.rbuffers,
 			&s.wbuffers,
 			s.readDeadline,
