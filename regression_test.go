@@ -610,3 +610,24 @@ func TestUnmaskedClientFrameRejected(t *testing.T) {
 	default:
 	}
 }
+
+func TestReservedCloseCodeRejected(t *testing.T) {
+	s := New(&Handler{}, WithReadDeadline(5*time.Second))
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, rb := testconn(t, address)
+	defer conn.Close()
+
+	_, err := conn.Write(maskedFrame(opClose, true, []byte{0x03, 0xf7}))
+	RequireNil(t, err)
+
+	got := make([]byte, 4)
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, err = io.ReadFull(rb, got)
+	RequireNil(t, err)
+	RequireEqual(t, byte(0x88), got[0])
+	RequireEqual(t, []byte{0x03, 0xea}, got[2:4])
+}
