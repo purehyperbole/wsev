@@ -284,12 +284,36 @@ func (s *Server) error(err error, isFatal bool) {
 	}
 }
 
-func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
+func handshakeEnd(cb *circbuf) int {
+	b, err := cb.peek(cb.buffered())
+	if err != nil {
+		return -1
+	}
+
+	i := bytes.Index(b, []byte("\r\n\r\n"))
+	if i < 0 {
+		return -1
+	}
+
+	return i + 4
+}
+
+func acceptWs(conn *Conn, buf *rbuf, end int, rb *bufio.Reader) error {
+	request, err := buf.b.peek(end)
+	if err != nil {
+		return err
+	}
+
 	// wrap our read buffer in a temporary bufio reader
-	rb.Reset(buf.b)
+	rb.Reset(bytes.NewReader(request))
 
 	// https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.1
 	r, err := http.ReadRequest(rb)
+	if err != nil {
+		return err
+	}
+
+	err = buf.b.advanceRead(end)
 	if err != nil {
 		return err
 	}

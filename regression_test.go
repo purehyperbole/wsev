@@ -473,3 +473,45 @@ func TestHandshakeAcceptsConnectionTokenList(t *testing.T) {
 	RequireNil(t, err)
 	RequireEqual(t, http.StatusSwitchingProtocols, resp.StatusCode)
 }
+
+func TestHandshakeSplitAcrossSegments(t *testing.T) {
+	msgch := make(chan []byte, 1)
+
+	s := New(
+		&Handler{
+			OnMessage: func(conn *Conn, msg []byte) {
+				msgch <- append([]byte{}, msg...)
+			},
+		},
+		WithReadDeadline(5*time.Second),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, err := net.Dial("tcp", address)
+	RequireNil(t, err)
+	defer conn.Close()
+
+	conn.(*net.TCPConn).SetNoDelay(true)
+
+	request := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\n\r\n", address, enc.EncodeToString(make([]byte, 16)))
+
+	_, err = conn.Write([]byte(request[:20]))
+	RequireNil(t, err)
+
+	time.Sleep(50 * time.Millisecond)
+
+	_, err = conn.Write(append([]byte(request[20:]), maskedFrame(opBinary, true, []byte("pipelined"))...))
+	RequireNil(t, err)
+
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	RequireNil(t, err)
+	RequireEqual(t, http.StatusSwitchingProtocols, resp.StatusCode)
+
+	msg, err := timeoutValue(msgch, time.Second)
+	RequireNil(t, err)
+	RequireEqual(t, []byte("pipelined"), *msg)
+}

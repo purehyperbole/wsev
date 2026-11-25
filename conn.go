@@ -50,7 +50,7 @@ type Conn struct {
 	heapindex      atomic.Int32       // index of this connection in timer heap
 	iscontinuation int32              // marks a continuation frame
 	isclosed       int32              // marks a connection as closed
-	upgraded       int32              // marks the connection been upgraded
+	isupgraded     int32              // marks the connection been upgraded
 	scheduled      bool               // marks for flush scheduling
 }
 
@@ -444,5 +444,9 @@ func (c *Conn) close() bool {
 }
 
 func (c *Conn) upgrade() bool {
-	return atomic.CompareAndSwapInt32(&c.upgraded, 0, 1)
+	return atomic.CompareAndSwapInt32(&c.isupgraded, 0, 1)
+}
+
+func (c *Conn) upgraded() bool {
+	return atomic.LoadInt32(&c.isupgraded) == 1
 }

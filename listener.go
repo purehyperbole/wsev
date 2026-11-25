@@ -175,8 +175,24 @@ func (l *listener) handleEvents(eventCount int, pollWait time.Duration) {
 			for !cn.closed() && (buf.b.buffered() > 0 || iters <= 10) {
 				// upgrade the connection and write upgrade negotiation
 				// response directly to underlying connection
-				if cn.upgrade() {
-					err = acceptWs(cn, buf, l.readbuf)
+				if !cn.upgraded() {
+					end := handshakeEnd(buf.b)
+					if end < 0 {
+						err = cn.buffer()
+						if err != nil {
+							if !errors.Is(err, syscall.EAGAIN) {
+								l.disconnect(int(events[i].Fd), cn, err)
+							}
+							break
+						}
+
+						iters++
+						continue
+					}
+
+					cn.upgrade()
+
+					err = acceptWs(cn, buf, end, l.readbuf)
 					if err != nil {
 						l.disconnect(int(events[i].Fd), cn, err)
 						break
