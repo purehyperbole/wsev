@@ -148,9 +148,7 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 		// shutdown() to signal to the client the connection
 		// is being closed. conn.Close does not send a tcp FIN
 		// or FIN ACK packet. possibly a bug?)
-		err = unix.Shutdown(connectionFd(c.Conn), unix.SHUT_RDWR)
-		c.Conn.Close()
-		return err
+		return unix.Shutdown(c.fd, unix.SHUT_RDWR)
 	}
 
 	return nil
@@ -196,11 +194,15 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 		// shutdown() to signal to the client the connection
 		// is being closed. conn.Close does not send a tcp FIN
 		// or FIN ACK packet. possibly a bug?)
-		err = unix.Shutdown(connectionFd(c.Conn), unix.SHUT_RDWR)
-		c.Conn.Close()
-		return err
+		return unix.Shutdown(c.fd, unix.SHUT_RDWR)
 	}
 
+	return nil
+}
+
+func (c *Conn) Close() error {
+	c.close()
+	c.quit(c, nil)
 	return nil
 }
 

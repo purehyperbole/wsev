@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func maskedFrame(op opCode, fin bool, payload []byte) []byte {
@@ -148,4 +150,58 @@ func TestCloseFromOtherGoroutineDoesNotRaceReader(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 	wg.Wait()
+}
+
+func TestStaleTeardownKeepsReusedFd(t *testing.T) {
+	epfd, err := unix.EpollCreate1(0)
+	RequireNil(t, err)
+	defer unix.Close(epfd)
+
+	l := &listener{
+		fd:      epfd,
+		handler: &Handler{},
+	}
+
+	stale := &Conn{}
+	current := &Conn{}
+
+	l.conns.Store(42, current)
+
+	RequireFalse(t, l.teardown(42, stale, nil))
+
+	v, ok := l.conns.Load(42)
+	RequireTrue(t, ok)
+	RequireTrue(t, v.(*Conn) == current)
+}
+
+func TestConnCloseNotifiesDisconnect(t *testing.T) {
+	closech := make(chan *testevent, 1)
+
+	s := New(
+		&Handler{
+			OnMessage: func(conn *Conn, msg []byte) {
+				conn.Close()
+			},
+			OnDisconnect: func(conn *Conn, err error) {
+				closech <- &testevent{conn: conn, err: err}
+			},
+		},
+		WithReadDeadline(5*time.Second),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, rb := testconn(t, address)
+	defer conn.Close()
+
+	_, err := conn.Write(maskedFrame(opBinary, true, []byte("close me")))
+	RequireNil(t, err)
+
+	RequireNil(t, timeout(closech, time.Second))
+
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, err = rb.ReadByte()
+	RequireEqual(t, io.EOF, err)
 }
