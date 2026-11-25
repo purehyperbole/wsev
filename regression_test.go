@@ -307,3 +307,43 @@ func TestFailedWriteClosesConnection(t *testing.T) {
 	RequireNil(t, err)
 	RequireNotNil(t, *derr)
 }
+
+func TestOversizedMessageRejected(t *testing.T) {
+	for _, fragmented := range []bool{false, true} {
+		s := New(
+			&Handler{},
+			WithMaxMessageSize(1024),
+			WithReadDeadline(5*time.Second),
+		)
+
+		port, address := nexttestport()
+		RequireNil(t, s.Serve(port))
+
+		conn, rb := testconn(t, address)
+
+		if fragmented {
+			chunk := bytes.Repeat([]byte{'x'}, 600)
+			conn.Write(maskedFrame(opBinary, false, chunk))
+			conn.Write(maskedFrame(opContinuation, true, chunk))
+		} else {
+			hd, _ := newCodec().BuildHeader(header{
+				OpCode: opBinary,
+				Fin:    true,
+				Masked: true,
+				Length: 1 << 40,
+			})
+			conn.Write(hd)
+			conn.Write(make([]byte, 4096))
+		}
+
+		got := make([]byte, 4)
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		_, err := io.ReadFull(rb, got)
+		RequireNil(t, err)
+		RequireEqual(t, byte(0x88), got[0])
+		RequireEqual(t, []byte{0x03, 0xf1}, got[2:4])
+
+		conn.Close()
+		s.Close()
+	}
+}

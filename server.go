@@ -30,6 +30,7 @@ const (
 	DefaultBufferFlushDeadline = time.Millisecond * 50
 	DefaultReadDeadline        = time.Second
 	DefaultWriteDeadline       = time.Second * 10
+	DefaultMaxMessageSize      = 1 << 24
 	DefaultEpollWaitDeadline   = time.Millisecond * 10
 	DefaultEpollEventSize      = 128
 )
@@ -54,6 +55,12 @@ func WithWriteBufferDeadline(deadline time.Duration) option {
 func WithWriteDeadline(deadline time.Duration) option {
 	return func(s *Server) {
 		s.writeDeadline = deadline
+	}
+}
+
+func WithMaxMessageSize(size int64) option {
+	return func(s *Server) {
+		s.maxMessageSize = size
 	}
 }
 
@@ -126,6 +133,7 @@ type Server struct {
 	readDeadline        time.Duration
 	writeBufferDeadline time.Duration
 	writeDeadline       time.Duration
+	maxMessageSize      int64
 	epollWaitDuration   time.Duration
 	epollEventSize      int
 	readBufferSize      int
@@ -139,6 +147,7 @@ func New(handler *Handler, opts ...option) *Server {
 		readDeadline:        DefaultReadDeadline,
 		writeBufferDeadline: DefaultBufferFlushDeadline,
 		writeDeadline:       DefaultWriteDeadline,
+		maxMessageSize:      DefaultMaxMessageSize,
 		epollEventSize:      DefaultEpollEventSize,
 		epollWaitDuration:   DefaultEpollWaitDeadline,
 		readBufferSize:      DefaultBufferSize,
@@ -201,6 +210,7 @@ func (s *Server) Serve(port int) error {
 			s.writeBufferDeadline,
 			s.writeDeadline,
 			s.writeBufferSize,
+			s.maxMessageSize,
 		)
 
 		lc := net.ListenConfig{

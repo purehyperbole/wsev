@@ -65,6 +65,12 @@ var (
 		immediate: true,
 		shutdown:  true,
 	}
+	ErrMessageTooBig error = &closeError{
+		Status:    CloseStatusMessageTooBig,
+		Reason:    "message too big",
+		immediate: true,
+		shutdown:  true,
+	}
 	ErrInvalidCloseEncoding error = &closeError{
 		Status:    CloseStatusInvalidFramePayloadData,
 		Reason:    "close frame reason invalid",
@@ -86,14 +92,16 @@ type listener struct {
 	readDeadline  time.Duration
 	flushDeadline time.Duration
 	writeDeadline time.Duration
+	maxMessage    int64
 	writebufsize  int
 	counter       int
 	fd            int
 }
 
-func newListener(epollFd int, handler *Handler, eventCount int, pollWait time.Duration, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline, writeDeadline time.Duration, writebufsize int) *listener {
+func newListener(epollFd int, handler *Handler, eventCount int, pollWait time.Duration, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline, writeDeadline time.Duration, writebufsize int, maxMessage int64) *listener {
 	l := &listener{
 		fd:            epollFd,
+		maxMessage:    maxMessage,
 		readDeadline:  readDeadline,
 		flushDeadline: flushDeadline,
 		writeDeadline: writeDeadline,
@@ -373,6 +381,10 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 	default:
 		// use our frame buffer here
 		buffer = buf.f
+	}
+
+	if buffer == buf.m && l.maxMessage > 0 && int64(buf.m.Len())+int64(buf.h.remaining) > l.maxMessage {
+		return 0, ErrMessageTooBig
 	}
 
 	// copy our buffered frame data to our message buffer
