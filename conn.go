@@ -248,8 +248,28 @@ func (c *Conn) buffer() error {
 
 func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, error)) (int, error) {
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
 
+	n, err := c.writeLocked(op, size, wcb)
+	if err != nil && err != ErrConnectionAlreadyClosed {
+		if c.writebuf != nil {
+			c.writebuf.b.Reset(nil)
+			c.writebufpool.Put(c.writebuf)
+			c.writebuf = nil
+		}
+
+		c.close()
+		c.mutex.Unlock()
+		c.quit(c, err)
+
+		return n, err
+	}
+
+	c.mutex.Unlock()
+
+	return n, err
+}
+
+func (c *Conn) writeLocked(op opCode, size int, wcb func(buf *bufio.Writer) (int, error)) (int, error) {
 	// try to mark our connection as closed
 	if c.closed() {
 		return 0, ErrConnectionAlreadyClosed

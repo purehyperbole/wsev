@@ -270,3 +270,40 @@ func TestWriteToStalledClientTimesOut(t *testing.T) {
 	_, err := timeoutValue(errch, 5*time.Second)
 	RequireNil(t, err)
 }
+
+func TestFailedWriteClosesConnection(t *testing.T) {
+	closech := make(chan error, 1)
+
+	s := New(
+		&Handler{
+			OnConnect: func(conn *Conn) {
+				go func() {
+					payload := bytes.Repeat([]byte{'x'}, 1<<16)
+
+					for {
+						_, err := conn.Write(payload)
+						if err != nil {
+							return
+						}
+					}
+				}()
+			},
+			OnDisconnect: func(conn *Conn, err error) {
+				closech <- err
+			},
+		},
+		WithWriteDeadline(200*time.Millisecond),
+		WithReadDeadline(time.Minute),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, _ := testconn(t, address)
+	defer conn.Close()
+
+	derr, err := timeoutValue(closech, 5*time.Second)
+	RequireNil(t, err)
+	RequireNotNil(t, *derr)
+}
