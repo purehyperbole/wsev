@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -99,6 +100,7 @@ type listener struct {
 	maxMessage    int64
 	writebufsize  int
 	lastPurge     time.Time
+	closed        atomic.Bool
 	fd            int
 }
 
@@ -134,7 +136,9 @@ func (l *listener) handleEvents(eventCount int, pollWait time.Duration) {
 				continue
 			}
 
-			l.error(err, true)
+			if !l.closed.Load() {
+				l.error(err, true)
+			}
 			return
 		}
 
@@ -587,10 +591,17 @@ func (l *listener) teardown(fd int, conn *Conn, derr error) bool {
 }
 
 func (l *listener) shutdown() error {
+	l.closed.Store(true)
+
 	err := l.socket.Close()
 	if err != nil {
 		return err
 	}
+
+	l.conns.Range(func(fd, conn any) bool {
+		l.teardown(fd.(int), conn.(*Conn), net.ErrClosed)
+		return true
+	})
 
 	return unix.Close(l.fd)
 }

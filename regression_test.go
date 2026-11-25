@@ -631,3 +631,37 @@ func TestReservedCloseCodeRejected(t *testing.T) {
 	RequireEqual(t, byte(0x88), got[0])
 	RequireEqual(t, []byte{0x03, 0xea}, got[2:4])
 }
+
+func TestServerCloseClosesConnections(t *testing.T) {
+	var mu sync.Mutex
+	var fatal bool
+
+	s := New(
+		&Handler{
+			OnError: func(err error, isFatal bool) {
+				mu.Lock()
+				fatal = fatal || isFatal
+				mu.Unlock()
+			},
+		},
+		WithReadDeadline(time.Minute),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+
+	conn, rb := testconn(t, address)
+	defer conn.Close()
+
+	RequireNil(t, s.Close())
+
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, err := rb.ReadByte()
+	RequireEqual(t, io.EOF, err)
+
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	RequireFalse(t, fatal)
+}
