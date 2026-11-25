@@ -157,7 +157,7 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 	return nil
 }
 
-// CloseImmediatelyWith sends close frame to the connection immediately, discarding any buffered state.
+// CloseImmediatelyWith flushes any buffered state and sends close frame to the connection immediately.
 // if disconnect is specified as true, the underlying connection will be closed immediately
 func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnect bool) error {
 	// try to mark our connection as closed
@@ -182,28 +182,12 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 		c.mutex.Unlock()
 	}()
 
-	hd, err := newWriteCodec().BuildHeader(header{
-		OpCode: opClose,
-		Fin:    true,
-		Length: int64(len(reason) + 2),
-	})
-
-	if err != nil {
-		return err
-	}
-
 	payload := make([]byte, len(reason)+2)
 
-	// write directly to the underlying connection
 	binary.BigEndian.PutUint16(payload, uint16(status))
 	copy(payload[2:], reason)
 
-	b := net.Buffers{
-		hd,
-		payload,
-	}
-
-	_, err = b.WriteTo(c.Conn)
+	err := c.writeControlLocked(opClose, payload)
 	if err != nil {
 		return err
 	}
@@ -337,6 +321,49 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 	}
 
 	return size, nil
+}
+
+func (c *Conn) writeControl(op opCode, payload []byte) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	return c.writeControlLocked(op, payload)
+}
+
+func (c *Conn) writeControlLocked(op opCode, payload []byte) error {
+	h := header{
+		OpCode: op,
+		Fin:    true,
+		Length: int64(len(payload)),
+	}
+
+	if c.writebuf != nil && c.writebuf.b.Buffered() > 0 {
+		err := c.writebuf.c.WriteHeader(c.writebuf.b, h)
+		if err != nil {
+			return err
+		}
+
+		_, err = c.writebuf.b.Write(payload)
+		if err != nil {
+			return err
+		}
+
+		return c.writebuf.b.Flush()
+	}
+
+	hd, err := newWriteCodec().BuildHeader(h)
+	if err != nil {
+		return err
+	}
+
+	b := net.Buffers{
+		hd,
+		payload,
+	}
+
+	_, err = b.WriteTo(c.Conn)
+
+	return err
 }
 
 func (c *Conn) acquireReadBuffer() *rbuf {

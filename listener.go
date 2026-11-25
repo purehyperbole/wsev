@@ -503,33 +503,7 @@ func (l *listener) error(err error, isFatal bool) {
 }
 
 func (l *listener) pongWs(conn *Conn, buf *rbuf) error {
-	hd, err := l.codec.BuildHeader(header{
-		OpCode: opPong,
-		Fin:    true,
-		Length: int64(buf.f.Len()),
-	})
-
-	if err != nil {
-		return err
-	}
-
-	// create a temporary net buffer
-	// so we can make use of writev
-	// to send the header and ping
-	// payload in one syscall
-	b := net.Buffers{
-		hd,
-		buf.f.Bytes(),
-	}
-
-	conn.mutex.Lock()
-	// write directly to the connection
-	// we lock this to avoid interleaved
-	// writes to the underlying tcp conn
-	_, err = b.WriteTo(conn.Conn)
-	conn.mutex.Unlock()
-
-	return err
+	return conn.writeControl(opPong, buf.f.Bytes())
 }
 
 func (l *listener) disconnect(fd int, conn *Conn, derr error) {
