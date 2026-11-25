@@ -515,3 +515,61 @@ func TestHandshakeSplitAcrossSegments(t *testing.T) {
 	RequireNil(t, err)
 	RequireEqual(t, []byte("pipelined"), *msg)
 }
+
+func TestUTF8SplitAcrossFragments(t *testing.T) {
+	msgch := make(chan string, 1)
+
+	s := New(
+		&Handler{
+			OnText: func(conn *Conn, msg string) {
+				msgch <- msg
+			},
+		},
+		WithReadDeadline(5*time.Second),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, _ := testconn(t, address)
+	defer conn.Close()
+
+	euro := []byte("€")
+
+	_, err := conn.Write(maskedFrame(opText, false, euro[:1]))
+	RequireNil(t, err)
+
+	_, err = conn.Write(maskedFrame(opContinuation, true, euro[1:]))
+	RequireNil(t, err)
+
+	msg, err := timeoutValue(msgch, time.Second)
+	RequireNil(t, err)
+	RequireEqual(t, "€", *msg)
+}
+
+func TestInvalidUTF8MessageRejected(t *testing.T) {
+	s := New(&Handler{OnText: func(conn *Conn, msg string) {}}, WithReadDeadline(5*time.Second))
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, rb := testconn(t, address)
+	defer conn.Close()
+
+	euro := []byte("€")
+
+	_, err := conn.Write(maskedFrame(opText, false, euro[:1]))
+	RequireNil(t, err)
+
+	_, err = conn.Write(maskedFrame(opContinuation, true, []byte{'x'}))
+	RequireNil(t, err)
+
+	got := make([]byte, 4)
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, err = io.ReadFull(rb, got)
+	RequireNil(t, err)
+	RequireEqual(t, byte(0x88), got[0])
+	RequireEqual(t, []byte{0x03, 0xef}, got[2:4])
+}

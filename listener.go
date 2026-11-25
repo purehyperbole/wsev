@@ -462,10 +462,6 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 				return 0, ErrInvalidCloseEncoding
 			}
 		}
-	case opText:
-		if !utf8.Valid(buffer.Bytes()[buffer.Len()-int(buf.h.Length):]) {
-			return 0, ErrInvalidPayloadEncoding
-		}
 	}
 
 	return buf.h.OpCode, nil
