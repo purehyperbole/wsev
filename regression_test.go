@@ -347,3 +347,63 @@ func TestOversizedMessageRejected(t *testing.T) {
 		s.Close()
 	}
 }
+
+func TestIdleConnectionPurgedUnderLoad(t *testing.T) {
+	var idle *Conn
+
+	opench := make(chan *Conn, 2)
+	closech := make(chan *Conn, 2)
+
+	s := New(
+		&Handler{
+			OnConnect: func(conn *Conn) {
+				opench <- conn
+			},
+			OnDisconnect: func(conn *Conn, err error) {
+				closech <- conn
+			},
+		},
+		WithListeners(1),
+		WithReadDeadline(time.Second),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	busy, _ := testconn(t, address)
+	defer busy.Close()
+	<-opench
+
+	quiet, _ := testconn(t, address)
+	defer quiet.Close()
+	idle = <-opench
+
+	stop := make(chan struct{})
+	defer close(stop)
+
+	go func() {
+		frame := maskedFrame(opBinary, true, []byte("x"))
+
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+
+			if _, err := busy.Write(frame); err != nil {
+				return
+			}
+
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	select {
+	case c := <-closech:
+		RequireTrue(t, c == idle)
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle connection was never purged while another connection was busy")
+	}
+}

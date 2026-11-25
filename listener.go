@@ -94,7 +94,7 @@ type listener struct {
 	writeDeadline time.Duration
 	maxMessage    int64
 	writebufsize  int
-	counter       int
+	lastPurge     time.Time
 	fd            int
 }
 
@@ -134,10 +134,9 @@ func (l *listener) handleEvents(eventCount int, pollWait time.Duration) {
 			return
 		}
 
+		l.purgeIdle()
+
 		if ec < 1 {
-			// use this as an opportunity to clear out old connections
-			// that have timed out
-			l.purgeIdle()
 			continue
 		}
 
@@ -488,14 +487,15 @@ func (l *listener) register(fd int, conn net.Conn) {
 }
 
 func (l *listener) purgeIdle() {
-	// dont check on every iteration
-	l.counter++
+	current := time.Now()
 
-	if l.counter%100 != 0 {
+	if current.Sub(l.lastPurge) < time.Second {
 		return
 	}
 
-	now := time.Now().Add(-l.readDeadline).Unix()
+	l.lastPurge = current
+
+	now := current.Add(-l.readDeadline).Unix()
 
 	var expired []*Conn
 
@@ -511,7 +511,10 @@ func (l *listener) purgeIdle() {
 	l.timermu.Unlock()
 
 	for _, conn := range expired {
-		conn.CloseImmediatelyWith(CloseStatusAbnormalClosure, ErrConnectionTimeout.Reason, true)
+		err := conn.CloseImmediatelyWith(CloseStatusAbnormalClosure, ErrConnectionTimeout.Reason, true)
+		if err == ErrConnectionAlreadyClosed {
+			conn.quit(conn, ErrConnectionTimeout)
+		}
 	}
 }
 
