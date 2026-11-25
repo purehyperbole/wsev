@@ -236,20 +236,34 @@ func (s *Server) Serve(port int) error {
 			return err
 		}
 
-		go func(pid int) {
-			for {
-				conn, err := s.listeners[pid].socket.Accept()
-				if err != nil {
-					s.error(err, true)
-					return
-				}
-
-				s.listeners[pid].register(connectionFd(conn), conn)
-			}
-		}(i)
+		go s.accept(s.listeners[i])
 	}
 
 	return nil
+}
+
+func (s *Server) accept(l *listener) {
+	var backoff time.Duration
+
+	for {
+		conn, err := l.socket.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+
+			s.error(err, false)
+
+			backoff = min(max(backoff*2, 5*time.Millisecond), time.Second)
+			time.Sleep(backoff)
+
+			continue
+		}
+
+		backoff = 0
+
+		l.register(connectionFd(conn), conn)
+	}
 }
 
 // Close closes all of the http servers

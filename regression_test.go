@@ -3,7 +3,9 @@ package wsev
 import (
 	"bytes"
 	"io"
+	"net"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -406,4 +408,46 @@ func TestIdleConnectionPurgedUnderLoad(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("idle connection was never purged while another connection was busy")
 	}
+}
+
+type flakyListener struct {
+	net.Listener
+	failures int
+	calls    int
+}
+
+func (f *flakyListener) Accept() (net.Conn, error) {
+	f.calls++
+
+	if f.calls <= f.failures {
+		return nil, syscall.EMFILE
+	}
+
+	return nil, net.ErrClosed
+}
+
+func TestAcceptSurvivesTransientErrors(t *testing.T) {
+	var errs []error
+	var fatal bool
+
+	s := New(&Handler{
+		OnError: func(err error, isFatal bool) {
+			errs = append(errs, err)
+			fatal = fatal || isFatal
+		},
+	})
+
+	fl := &flakyListener{failures: 3}
+
+	done := make(chan struct{})
+
+	go func() {
+		s.accept(&listener{socket: fl})
+		close(done)
+	}()
+
+	RequireNil(t, timeout(done, 2*time.Second))
+	RequireEqual(t, 4, fl.calls)
+	RequireEqual(t, 3, len(errs))
+	RequireFalse(t, fatal)
 }
