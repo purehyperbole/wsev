@@ -97,16 +97,16 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 	c.mutex.Lock()
 
 	defer func() {
-		// call the callback to close the connection and remove it from epoll, if we are disconnecting
-		if disconnect {
-			c.quit(c, nil)
-		}
 		if c.writebuf != nil {
 			c.writebuf.b.Reset(nil)
 			c.writebufpool.Put(c.writebuf)
 			c.writebuf = nil
 		}
 		c.mutex.Unlock()
+
+		if disconnect {
+			c.quit(c, nil)
+		}
 	}()
 
 	// if we don't have a write buffer, then get one from the pool
@@ -165,17 +165,16 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 	c.mutex.Lock()
 
 	defer func() {
-		// call the callback to close the connection and remove it from epoll, if we are disconnecting
-		if disconnect {
-			c.quit(c, nil)
-		}
-		// return the buffer and remove it from this connection
 		if c.writebuf != nil {
 			c.writebuf.b.Reset(nil)
 			c.writebufpool.Put(c.writebuf)
 			c.writebuf = nil
 		}
 		c.mutex.Unlock()
+
+		if disconnect {
+			c.quit(c, nil)
+		}
 	}()
 
 	payload := make([]byte, len(reason)+2)
@@ -287,40 +286,34 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 	if !c.scheduled {
 		c.scheduled = true
 
-		time.AfterFunc(c.flush, func() {
-			c.mutex.Lock()
-			defer func() {
-				// return the buffer and remove it from this connection
-				if c.writebuf != nil {
-					c.writebuf.b.Reset(nil)
-					c.writebufpool.Put(c.writebuf)
-					c.writebuf = nil
-				}
-
-				c.scheduled = false
-				c.mutex.Unlock()
-			}()
-
-			// someone else has flushed the buffer, so exit
-			if c.writebuf == nil {
-				return
-			}
-
-			if c.writebuf.b.Buffered() < 1 {
-				return
-			}
-
-			// write all data
-			err := c.writebuf.b.Flush()
-			if err != nil {
-				// mark the connection as closed and call the error callback
-				c.close()
-				c.quit(c, err)
-			}
-		})
+		time.AfterFunc(c.flush, c.flushScheduled)
 	}
 
 	return size, nil
+}
+
+func (c *Conn) flushScheduled() {
+	c.mutex.Lock()
+
+	var err error
+
+	if c.writebuf != nil {
+		if c.writebuf.b.Buffered() > 0 {
+			err = c.writebuf.b.Flush()
+		}
+
+		c.writebuf.b.Reset(nil)
+		c.writebufpool.Put(c.writebuf)
+		c.writebuf = nil
+	}
+
+	c.scheduled = false
+	c.mutex.Unlock()
+
+	if err != nil {
+		c.close()
+		c.quit(c, err)
+	}
 }
 
 func (c *Conn) writeControl(op opCode, payload []byte) error {

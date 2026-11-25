@@ -482,15 +482,20 @@ func (l *listener) purgeIdle() {
 
 	now := time.Now().Add(-l.readDeadline).Unix()
 
-	l.timermu.Lock()
-	defer l.timermu.Unlock()
+	var expired []*Conn
 
+	l.timermu.Lock()
 	for {
 		conn := l.timerheap.popIf(now)
 		if conn == nil {
-			return
+			break
 		}
 
+		expired = append(expired, conn)
+	}
+	l.timermu.Unlock()
+
+	for _, conn := range expired {
 		conn.CloseImmediatelyWith(CloseStatusAbnormalClosure, ErrConnectionTimeout.Reason, true)
 	}
 }

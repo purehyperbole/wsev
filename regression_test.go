@@ -205,3 +205,34 @@ func TestConnCloseNotifiesDisconnect(t *testing.T) {
 	_, err = rb.ReadByte()
 	RequireEqual(t, io.EOF, err)
 }
+
+func TestDisconnectCallbackCanUseConn(t *testing.T) {
+	closech := make(chan error, 1)
+
+	s := New(
+		&Handler{
+			OnMessage: func(conn *Conn, msg []byte) {
+				go conn.CloseWith(CloseStatusNormalClosure, "", true)
+			},
+			OnDisconnect: func(conn *Conn, err error) {
+				_, werr := conn.Write([]byte("late"))
+				closech <- werr
+			},
+		},
+		WithReadDeadline(5*time.Second),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, _ := testconn(t, address)
+	defer conn.Close()
+
+	_, err := conn.Write(maskedFrame(opBinary, true, []byte("bye")))
+	RequireNil(t, err)
+
+	werr, err := timeoutValue(closech, time.Second)
+	RequireNil(t, err)
+	RequireEqual(t, ErrConnectionAlreadyClosed, *werr)
+}
