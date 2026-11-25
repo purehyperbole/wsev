@@ -236,3 +236,37 @@ func TestDisconnectCallbackCanUseConn(t *testing.T) {
 	RequireNil(t, err)
 	RequireEqual(t, ErrConnectionAlreadyClosed, *werr)
 }
+
+func TestWriteToStalledClientTimesOut(t *testing.T) {
+	errch := make(chan error, 1)
+
+	s := New(
+		&Handler{
+			OnConnect: func(conn *Conn) {
+				go func() {
+					payload := bytes.Repeat([]byte{'x'}, 1024)
+
+					for {
+						_, err := conn.Write(payload)
+						if err != nil {
+							errch <- err
+							return
+						}
+					}
+				}()
+			},
+		},
+		WithWriteDeadline(200*time.Millisecond),
+		WithReadDeadline(time.Minute),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, _ := testconn(t, address)
+	defer conn.Close()
+
+	_, err := timeoutValue(errch, 5*time.Second)
+	RequireNil(t, err)
+}

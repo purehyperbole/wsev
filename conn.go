@@ -45,6 +45,7 @@ type Conn struct {
 	writebuf       *wbuf              // acquired write buffer
 	quit           func(*Conn, error) // quit callback
 	flush          time.Duration      // flush interval
+	writeDeadline  time.Duration      // write deadline
 	mutex          sync.Mutex         // write buffer lock
 	heapindex      atomic.Int32       // index of this connection in timer heap
 	iscontinuation int32              // marks a continuation frame
@@ -53,14 +54,15 @@ type Conn struct {
 	scheduled      bool               // marks for flush scheduling
 }
 
-func newBufConn(conn net.Conn, readbufpool, writebufpool *sync.Pool, flush time.Duration, shutdownCallback func(*Conn, error)) *Conn {
+func newBufConn(conn net.Conn, readbufpool, writebufpool *sync.Pool, flush, writeDeadline time.Duration, shutdownCallback func(*Conn, error)) *Conn {
 	c := &Conn{
-		Conn:         conn,
-		fd:           connectionFd(conn),
-		readbufpool:  readbufpool,
-		writebufpool: writebufpool,
-		flush:        flush,
-		quit:         shutdownCallback,
+		Conn:          conn,
+		fd:            connectionFd(conn),
+		readbufpool:   readbufpool,
+		writebufpool:  writebufpool,
+		flush:         flush,
+		writeDeadline: writeDeadline,
+		quit:          shutdownCallback,
 	}
 
 	c.heapindex.Store(HeapUnassigned)
@@ -114,6 +116,8 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 		c.writebuf = c.writebufpool.Get().(*wbuf)
 		c.writebuf.b.Reset(c.Conn)
 	}
+
+	c.armWriteDeadline()
 
 	err := c.writebuf.c.WriteHeader(c.writebuf.b, header{
 		OpCode: opClose,
@@ -257,6 +261,8 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 		c.writebuf.b.Reset(c.Conn)
 	}
 
+	c.armWriteDeadline()
+
 	// write the ws header and data to the buffer
 	err := c.writebuf.c.WriteHeader(c.writebuf.b, header{
 		OpCode: op,
@@ -292,6 +298,12 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 	return size, nil
 }
 
+func (c *Conn) armWriteDeadline() {
+	if c.writeDeadline > 0 {
+		_ = c.Conn.SetWriteDeadline(time.Now().Add(c.writeDeadline))
+	}
+}
+
 func (c *Conn) flushScheduled() {
 	c.mutex.Lock()
 
@@ -299,6 +311,7 @@ func (c *Conn) flushScheduled() {
 
 	if c.writebuf != nil {
 		if c.writebuf.b.Buffered() > 0 {
+			c.armWriteDeadline()
 			err = c.writebuf.b.Flush()
 		}
 
@@ -324,6 +337,8 @@ func (c *Conn) writeControl(op opCode, payload []byte) error {
 }
 
 func (c *Conn) writeControlLocked(op opCode, payload []byte) error {
+	c.armWriteDeadline()
+
 	h := header{
 		OpCode: op,
 		Fin:    true,

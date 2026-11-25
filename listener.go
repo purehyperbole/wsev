@@ -85,16 +85,18 @@ type listener struct {
 	socket        net.Listener
 	readDeadline  time.Duration
 	flushDeadline time.Duration
+	writeDeadline time.Duration
 	writebufsize  int
 	counter       int
 	fd            int
 }
 
-func newListener(epollFd int, handler *Handler, eventCount int, pollWait time.Duration, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline time.Duration, writebufsize int) *listener {
+func newListener(epollFd int, handler *Handler, eventCount int, pollWait time.Duration, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline, writeDeadline time.Duration, writebufsize int) *listener {
 	l := &listener{
 		fd:            epollFd,
 		readDeadline:  readDeadline,
 		flushDeadline: flushDeadline,
+		writeDeadline: writeDeadline,
 		writebufsize:  writebufsize,
 		readbufpool:   readbufpool,
 		writebufpool:  writebufpool,
@@ -448,6 +450,7 @@ func (l *listener) register(fd int, conn net.Conn) {
 		l.readbufpool,
 		l.writebufpool,
 		l.flushDeadline,
+		l.writeDeadline,
 		func(bc *Conn, err error) {
 			l.teardown(fd, bc, err)
 		},

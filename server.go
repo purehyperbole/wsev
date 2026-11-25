@@ -29,6 +29,7 @@ const (
 	DefaultBufferSize          = 1 << 14
 	DefaultBufferFlushDeadline = time.Millisecond * 50
 	DefaultReadDeadline        = time.Second
+	DefaultWriteDeadline       = time.Second * 10
 	DefaultEpollWaitDeadline   = time.Millisecond * 10
 	DefaultEpollEventSize      = 128
 )
@@ -47,6 +48,12 @@ func WithReadDeadline(deadline time.Duration) option {
 func WithWriteBufferDeadline(deadline time.Duration) option {
 	return func(s *Server) {
 		s.writeBufferDeadline = deadline
+	}
+}
+
+func WithWriteDeadline(deadline time.Duration) option {
+	return func(s *Server) {
+		s.writeDeadline = deadline
 	}
 }
 
@@ -118,6 +125,7 @@ type Server struct {
 	listeners           []*listener
 	readDeadline        time.Duration
 	writeBufferDeadline time.Duration
+	writeDeadline       time.Duration
 	epollWaitDuration   time.Duration
 	epollEventSize      int
 	readBufferSize      int
@@ -130,6 +138,7 @@ func New(handler *Handler, opts ...option) *Server {
 		listeners:           make([]*listener, runtime.GOMAXPROCS(0)),
 		readDeadline:        DefaultReadDeadline,
 		writeBufferDeadline: DefaultBufferFlushDeadline,
+		writeDeadline:       DefaultWriteDeadline,
 		epollEventSize:      DefaultEpollEventSize,
 		epollWaitDuration:   DefaultEpollWaitDeadline,
 		readBufferSize:      DefaultBufferSize,
@@ -190,6 +199,7 @@ func (s *Server) Serve(port int) error {
 			&s.wbuffers,
 			s.readDeadline,
 			s.writeBufferDeadline,
+			s.writeDeadline,
 			s.writeBufferSize,
 		)
 
