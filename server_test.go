@@ -28,15 +28,16 @@ type testevent struct {
 	msg  []byte
 }
 
-var testport int = 10000
-
 func nexttestport() (int, string) {
-	port := testport
-	address := fmt.Sprintf("localhost:%d", port)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		panic(err)
+	}
 
-	testport++
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
 
-	return port, address
+	return port, fmt.Sprintf("localhost:%d", port)
 }
 
 func TestServerConnect(t *testing.T) {
