@@ -573,3 +573,40 @@ func TestInvalidUTF8MessageRejected(t *testing.T) {
 	RequireEqual(t, byte(0x88), got[0])
 	RequireEqual(t, []byte{0x03, 0xef}, got[2:4])
 }
+
+func TestUnmaskedClientFrameRejected(t *testing.T) {
+	msgch := make(chan []byte, 1)
+
+	s := New(
+		&Handler{
+			OnMessage: func(conn *Conn, msg []byte) {
+				msgch <- msg
+			},
+		},
+		WithReadDeadline(5*time.Second),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, rb := testconn(t, address)
+	defer conn.Close()
+
+	RequireNil(t, newCodec().WriteHeader(conn, header{OpCode: opBinary, Fin: true, Length: 2}))
+	_, err := conn.Write([]byte("hi"))
+	RequireNil(t, err)
+
+	got := make([]byte, 4)
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, err = io.ReadFull(rb, got)
+	RequireNil(t, err)
+	RequireEqual(t, byte(0x88), got[0])
+	RequireEqual(t, []byte{0x03, 0xea}, got[2:4])
+
+	select {
+	case <-msgch:
+		t.Fatal("unmasked frame was delivered to the handler")
+	default:
+	}
+}

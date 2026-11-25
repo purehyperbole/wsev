@@ -110,6 +110,7 @@ func TestServerDisconnect(t *testing.T) {
 	err = codec.WriteHeader(conn, header{
 		OpCode: opClose,
 		Fin:    true,
+		Masked: true,
 	})
 
 	RequireNil(t, err)
@@ -186,6 +187,7 @@ func TestServerPong(t *testing.T) {
 	err = codec.WriteHeader(conn, header{
 		OpCode: opPing,
 		Fin:    true,
+		Masked: true,
 	})
 
 	RequireNil(t, err)
@@ -390,6 +392,7 @@ func TestServerReceiveSmall(t *testing.T) {
 		err = codec.WriteHeader(conn, header{
 			OpCode: opBinary,
 			Fin:    true,
+			Masked: true,
 			Length: 8,
 		})
 
@@ -444,6 +447,7 @@ func TestServerReceiveLarge(t *testing.T) {
 		err = codec.WriteHeader(conn, header{
 			OpCode: opBinary,
 			Fin:    true,
+			Masked: true,
 			Length: int64(len(data)),
 		})
 

@@ -39,6 +39,10 @@ var (
 		Reason: "non-zero rsv bits not supported",
 		// immediate: true,
 	}
+	ErrUnmaskedFrame error = &closeError{
+		Status: CloseStatusProtocolError,
+		Reason: "client frames must be masked",
+	}
 	ErrInvalidOpCode error = &closeError{
 		Status: CloseStatusProtocolError,
 		Reason: "invalid or reserved op code",
@@ -332,6 +336,10 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 	if buf.h.Rsv > 0 {
 		// we don't support rsv bits > 0
 		return 0, ErrInvalidRSVBits
+	}
+
+	if !buf.h.Masked {
+		return 0, ErrUnmaskedFrame
 	}
 
 	if buf.h.isReserved() {
