@@ -450,7 +450,7 @@ func (l *listener) register(fd int, conn net.Conn) {
 		l.writebufpool,
 		l.flushDeadline,
 		func(bc *Conn, err error) {
-			l.disconnect(fd, bc, err)
+			l.teardown(fd, bc, err)
 		},
 	)
 
@@ -507,6 +507,12 @@ func (l *listener) pongWs(conn *Conn, buf *rbuf) error {
 }
 
 func (l *listener) disconnect(fd int, conn *Conn, derr error) {
+	if l.teardown(fd, conn, derr) {
+		conn.releaseReadBuffer()
+	}
+}
+
+func (l *listener) teardown(fd int, conn *Conn, derr error) bool {
 	// tell epoll we don't need to monitor this connection anymore
 	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_DEL, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
 	if err != nil {
@@ -525,10 +531,8 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	// delete the connection from our connection list
 	_, ok := l.conns.LoadAndDelete(fd)
 	if !ok {
-		return
+		return false
 	}
-
-	conn.releaseReadBuffer()
 
 	if conn.heapindex.Load() > HeapRemoved {
 		// if this hasn't been removed from the heap
@@ -541,6 +545,8 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	if l.handler.OnDisconnect != nil {
 		l.handler.OnDisconnect(conn, derr)
 	}
+
+	return true
 }
 
 func (l *listener) shutdown() error {

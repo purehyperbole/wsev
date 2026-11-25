@@ -3,6 +3,7 @@ package wsev
 import (
 	"bytes"
 	"io"
+	"sync"
 	"testing"
 	"time"
 )
@@ -89,4 +90,62 @@ func TestCloseImmediatelyDoesNotInterleavePartialFrame(t *testing.T) {
 	want = append(want, 0x88, 0x02, 0x03, 0xe9)
 
 	RequireEqual(t, want, got)
+}
+
+func TestCloseFromOtherGoroutineDoesNotRaceReader(t *testing.T) {
+	var mu sync.Mutex
+	var conns []*Conn
+
+	s := New(
+		&Handler{
+			OnConnect: func(conn *Conn) {
+				mu.Lock()
+				conns = append(conns, conn)
+				mu.Unlock()
+			},
+		},
+		WithReadDeadline(5*time.Second),
+	)
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < 20; i++ {
+		conn, _ := testconn(t, address)
+		defer conn.Close()
+
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			frame := maskedFrame(opBinary, true, bytes.Repeat([]byte{'x'}, 4000))
+
+			for j := 0; j < 200; j++ {
+				_, err := conn.Write(frame[:len(frame)/2])
+				if err != nil {
+					return
+				}
+
+				_, err = conn.Write(frame[len(frame)/2:])
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	for _, c := range conns {
+		go c.CloseWith(CloseStatusGoingAway, "bye", false)
+	}
+	mu.Unlock()
+
+	time.Sleep(300 * time.Millisecond)
+	wg.Wait()
 }

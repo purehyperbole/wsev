@@ -106,7 +106,6 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 			c.writebufpool.Put(c.writebuf)
 			c.writebuf = nil
 		}
-		c.releaseReadBuffer()
 		c.mutex.Unlock()
 	}()
 
@@ -178,7 +177,6 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 			c.writebufpool.Put(c.writebuf)
 			c.writebuf = nil
 		}
-		c.releaseReadBuffer()
 		c.mutex.Unlock()
 	}()
 
