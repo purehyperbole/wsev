@@ -2,6 +2,7 @@ package wsev
 
 import (
 	"crypto/rand"
+	"os"
 	"testing"
 )
 
@@ -92,4 +93,27 @@ func TestCircbuf(t *testing.T) {
 	next = buf.next()
 	RequireEqual(t, len(valueC), buffered)
 	RequireEqual(t, DefaultBufferSize-len(valueC), len(next))
+}
+
+func TestCircbufFailedCreateDoesNotLeak(t *testing.T) {
+	before, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skip("no /proc/self/fd")
+	}
+
+	for i := 0; i < 100; i++ {
+		_, err := newCircbuf(-os.Getpagesize())
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	}
+
+	after, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(after) > len(before)+5 {
+		t.Fatalf("leaked %d file descriptors", len(after)-len(before))
+	}
 }
