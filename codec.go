@@ -70,7 +70,6 @@ var validCloseStatus = map[CloseStatus]struct{}{
 	CloseStatusInternalServerErr:       {},
 	CloseStatusServiceRestart:          {},
 	CloseStatusTryAgainLater:           {},
-	CloseStatusTLSHandshake:            {},
 }
 
 func init() {

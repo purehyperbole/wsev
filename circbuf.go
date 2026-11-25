@@ -38,6 +38,7 @@ func newCircbuf(size int) (*circbuf, error) {
 
 	err = unix.Ftruncate(fd, int64(size))
 	if err != nil {
+		unix.Close(fd)
 		return nil, err
 	}
 
@@ -55,6 +56,7 @@ func newCircbuf(size int) (*circbuf, error) {
 	)
 
 	if err != nil {
+		unix.Close(fd)
 		return nil, err
 	}
 
@@ -69,6 +71,8 @@ func newCircbuf(size int) (*circbuf, error) {
 	)
 
 	if err != nil {
+		munmap(addr, uintptr(size*2))
+		unix.Close(fd)
 		return nil, err
 	}
 
@@ -83,6 +87,8 @@ func newCircbuf(size int) (*circbuf, error) {
 	)
 
 	if err != nil {
+		munmap(addr, uintptr(size*2))
+		unix.Close(fd)
 		return nil, err
 	}
 
@@ -93,26 +99,8 @@ func newCircbuf(size int) (*circbuf, error) {
 	}
 
 	runtime.SetFinalizer(c, func(c *circbuf) {
-		err := munmap(c.address+uintptr(c.size), uintptr(c.size))
-		if err != nil {
-			panic(err)
-		}
-
-		err = munmap(c.address, uintptr(c.size))
-		if err != nil {
-			panic(err)
-		}
-
-		// TODO cleanup mappings...
-		err = munmap(c.address, uintptr(c.size*2))
-		if err != nil {
-			panic(err)
-		}
-
-		err = unix.Close(c.fd)
-		if err != nil {
-			panic(err)
-		}
+		munmap(c.address, uintptr(c.size*2))
+		unix.Close(c.fd)
 	})
 
 	return c, nil

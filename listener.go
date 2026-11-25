@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -40,6 +40,10 @@ var (
 		Reason: "non-zero rsv bits not supported",
 		// immediate: true,
 	}
+	ErrUnmaskedFrame error = &closeError{
+		Status: CloseStatusProtocolError,
+		Reason: "client frames must be masked",
+	}
 	ErrInvalidOpCode error = &closeError{
 		Status: CloseStatusProtocolError,
 		Reason: "invalid or reserved op code",
@@ -66,6 +70,12 @@ var (
 		immediate: true,
 		shutdown:  true,
 	}
+	ErrMessageTooBig error = &closeError{
+		Status:    CloseStatusMessageTooBig,
+		Reason:    "message too big",
+		immediate: true,
+		shutdown:  true,
+	}
 	ErrInvalidCloseEncoding error = &closeError{
 		Status:    CloseStatusInvalidFramePayloadData,
 		Reason:    "close frame reason invalid",
@@ -86,16 +96,21 @@ type listener struct {
 	socket        net.Listener
 	readDeadline  time.Duration
 	flushDeadline time.Duration
+	writeDeadline time.Duration
+	maxMessage    int64
 	writebufsize  int
-	counter       int
+	lastPurge     time.Time
+	closed        atomic.Bool
 	fd            int
 }
 
-func newListener(epollFd int, handler *Handler, eventCount int, pollWait time.Duration, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline time.Duration, writebufsize int) *listener {
+func newListener(epollFd int, handler *Handler, eventCount int, pollWait time.Duration, readbufpool, writebufpool *sync.Pool, readDeadline, flushDeadline, writeDeadline time.Duration, writebufsize int, maxMessage int64) *listener {
 	l := &listener{
 		fd:            epollFd,
+		maxMessage:    maxMessage,
 		readDeadline:  readDeadline,
 		flushDeadline: flushDeadline,
+		writeDeadline: writeDeadline,
 		writebufsize:  writebufsize,
 		readbufpool:   readbufpool,
 		writebufpool:  writebufpool,
@@ -121,14 +136,15 @@ func (l *listener) handleEvents(eventCount int, pollWait time.Duration) {
 				continue
 			}
 
-			l.error(err, true)
+			if !l.closed.Load() {
+				l.error(err, true)
+			}
 			return
 		}
 
+		l.purgeIdle()
+
 		if ec < 1 {
-			// use this as an opportunity to clear out old connections
-			// that have timed out
-			l.purgeIdle()
 			continue
 		}
 
@@ -167,8 +183,24 @@ func (l *listener) handleEvents(eventCount int, pollWait time.Duration) {
 			for !cn.closed() && (buf.b.buffered() > 0 || iters <= 10) {
 				// upgrade the connection and write upgrade negotiation
 				// response directly to underlying connection
-				if cn.upgrade() {
-					err = acceptWs(cn, buf, l.readbuf)
+				if !cn.upgraded() {
+					end := handshakeEnd(buf.b)
+					if end < 0 {
+						err = cn.buffer()
+						if err != nil {
+							if !errors.Is(err, syscall.EAGAIN) {
+								l.disconnect(int(events[i].Fd), cn, err)
+							}
+							break
+						}
+
+						iters++
+						continue
+					}
+
+					cn.upgrade()
+
+					err = acceptWs(cn, buf, end, l.readbuf)
 					if err != nil {
 						l.disconnect(int(events[i].Fd), cn, err)
 						break
@@ -310,6 +342,10 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 		return 0, ErrInvalidRSVBits
 	}
 
+	if !buf.h.Masked {
+		return 0, ErrUnmaskedFrame
+	}
+
 	if buf.h.isReserved() {
 		// reserved op code used
 		return 0, ErrInvalidOpCode
@@ -374,6 +410,10 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 		buffer = buf.f
 	}
 
+	if buffer == buf.m && l.maxMessage > 0 && int64(buf.m.Len())+int64(buf.h.remaining) > l.maxMessage {
+		return 0, ErrMessageTooBig
+	}
+
 	// copy our buffered frame data to our message buffer
 	if int64(buf.h.remaining) <= int64(buf.b.buffered()) {
 		peeked, err := buf.b.peek(buf.h.remaining)
@@ -434,10 +474,6 @@ func (l *listener) assembleFrame(conn *Conn, buf *rbuf) (opCode, error) {
 				return 0, ErrInvalidCloseEncoding
 			}
 		}
-	case opText:
-		if !utf8.Valid(buffer.Bytes()[buffer.Len()-int(buf.h.Length):]) {
-			return 0, ErrInvalidPayloadEncoding
-		}
 	}
 
 	return buf.h.OpCode, nil
@@ -449,8 +485,9 @@ func (l *listener) register(fd int, conn net.Conn) {
 		l.readbufpool,
 		l.writebufpool,
 		l.flushDeadline,
+		l.writeDeadline,
 		func(bc *Conn, err error) {
-			l.disconnect(fd, bc, err)
+			l.teardown(fd, bc, err)
 		},
 	)
 
@@ -474,25 +511,34 @@ func (l *listener) register(fd int, conn net.Conn) {
 }
 
 func (l *listener) purgeIdle() {
-	// dont check on every iteration
-	l.counter++
+	current := time.Now()
 
-	if l.counter%100 != 0 {
+	if current.Sub(l.lastPurge) < time.Second {
 		return
 	}
 
-	now := time.Now().Add(-l.readDeadline).Unix()
+	l.lastPurge = current
+
+	now := current.Add(-l.readDeadline).Unix()
+
+	var expired []*Conn
 
 	l.timermu.Lock()
-	defer l.timermu.Unlock()
-
 	for {
 		conn := l.timerheap.popIf(now)
 		if conn == nil {
-			return
+			break
 		}
 
-		conn.CloseImmediatelyWith(CloseStatusAbnormalClosure, ErrConnectionTimeout.Reason, true)
+		expired = append(expired, conn)
+	}
+	l.timermu.Unlock()
+
+	for _, conn := range expired {
+		err := conn.CloseImmediatelyWith(CloseStatusAbnormalClosure, ErrConnectionTimeout.Reason, true)
+		if err == ErrConnectionAlreadyClosed {
+			conn.quit(conn, ErrConnectionTimeout)
+		}
 	}
 }
 
@@ -503,62 +549,35 @@ func (l *listener) error(err error, isFatal bool) {
 }
 
 func (l *listener) pongWs(conn *Conn, buf *rbuf) error {
-	hd, err := l.codec.BuildHeader(header{
-		OpCode: opPong,
-		Fin:    true,
-		Length: int64(buf.f.Len()),
-	})
-
-	if err != nil {
-		return err
-	}
-
-	// create a temporary net buffer
-	// so we can make use of writev
-	// to send the header and ping
-	// payload in one syscall
-	b := net.Buffers{
-		hd,
-		buf.f.Bytes(),
-	}
-
-	conn.mutex.Lock()
-	// write directly to the connection
-	// we lock this to avoid interleaved
-	// writes to the underlying tcp conn
-	_, err = b.WriteTo(conn.Conn)
-	conn.mutex.Unlock()
-
-	return err
+	return conn.writeControl(opPong, buf.f.Bytes())
 }
 
 func (l *listener) disconnect(fd int, conn *Conn, derr error) {
-	// tell epoll we don't need to monitor this connection anymore
+	if l.teardown(fd, conn, derr) {
+		conn.releaseReadBuffer()
+	}
+}
+
+func (l *listener) teardown(fd int, conn *Conn, derr error) bool {
+	if !l.conns.CompareAndDelete(fd, conn) {
+		return false
+	}
+
 	err := unix.EpollCtl(l.fd, syscall.EPOLL_CTL_DEL, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
 	if err != nil {
-		if !errors.Is(err, syscall.EBADFD) && !errors.Is(err, os.ErrNotExist) {
+		if !errors.Is(err, syscall.EBADF) && !errors.Is(err, syscall.ENOENT) {
 			l.error(err, false)
 		}
 	}
 
-	err = conn.Close()
+	err = conn.Conn.Close()
 	if err != nil {
 		if !errors.Is(err, net.ErrClosed) {
 			l.error(err, false)
 		}
 	}
 
-	// delete the connection from our connection list
-	_, ok := l.conns.LoadAndDelete(fd)
-	if !ok {
-		return
-	}
-
-	conn.releaseReadBuffer()
-
 	if conn.heapindex.Load() > HeapRemoved {
-		// if this hasn't been removed from the heap
-		// remove it
 		l.timermu.Lock()
 		l.timerheap.delete(conn)
 		l.timermu.Unlock()
@@ -567,13 +586,22 @@ func (l *listener) disconnect(fd int, conn *Conn, derr error) {
 	if l.handler.OnDisconnect != nil {
 		l.handler.OnDisconnect(conn, derr)
 	}
+
+	return true
 }
 
 func (l *listener) shutdown() error {
+	l.closed.Store(true)
+
 	err := l.socket.Close()
 	if err != nil {
 		return err
 	}
+
+	l.conns.Range(func(fd, conn any) bool {
+		l.teardown(fd.(int), conn.(*Conn), net.ErrClosed)
+		return true
+	})
 
 	return unix.Close(l.fd)
 }
