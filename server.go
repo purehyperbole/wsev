@@ -315,7 +315,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	}
 
 	// check request header contains the 'Connection: Upgrade' and 'Upgrade: websocket' headers
-	if !strings.EqualFold(h.Get("Connection"), "upgrade") || !strings.EqualFold(h.Get("Upgrade"), "websocket") {
+	if !headerHasToken(h, "Connection", "upgrade") || !headerHasToken(h, "Upgrade", "websocket") {
 		return writeHeader(
 			conn.Conn,
 			http.StatusUpgradeRequired,
@@ -390,6 +390,18 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	}
 
 	return nil
+}
+
+func headerHasToken(h http.Header, name, token string) bool {
+	for _, value := range h.Values(name) {
+		for _, t := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(t), token) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func connectionFd(conn net.Conn) int {

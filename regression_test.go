@@ -1,9 +1,12 @@
 package wsev
 
 import (
+	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"syscall"
 	"testing"
@@ -450,4 +453,23 @@ func TestAcceptSurvivesTransientErrors(t *testing.T) {
 	RequireEqual(t, 4, fl.calls)
 	RequireEqual(t, 3, len(errs))
 	RequireFalse(t, fatal)
+}
+
+func TestHandshakeAcceptsConnectionTokenList(t *testing.T) {
+	s := New(&Handler{}, WithReadDeadline(5*time.Second))
+
+	port, address := nexttestport()
+	RequireNil(t, s.Serve(port))
+	defer s.Close()
+
+	conn, err := net.Dial("tcp", address)
+	RequireNil(t, err)
+	defer conn.Close()
+
+	fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\n\r\n", address, enc.EncodeToString(make([]byte, 16)))
+
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	RequireNil(t, err)
+	RequireEqual(t, http.StatusSwitchingProtocols, resp.StatusCode)
 }
