@@ -34,10 +34,34 @@ func (h *heap) delete(value *Conn) {
 		return
 	}
 
-	h.swap(current, len(*h)-1)
+	last := len(*h) - 1
 
-	*h = (*h)[:len(*h)-1]
+	h.swap(current, last)
 
+	*h = (*h)[:last]
+
+	if current < last {
+		h.up(current)
+		h.down(int((*h)[current].value.heapindex.Load()))
+	}
+
+	value.heapindex.Store(HeapRemoved)
+}
+
+func (h *heap) up(current int) {
+	for current > 0 {
+		parent := parentIndex(current)
+
+		if (*h)[parent].key <= (*h)[current].key {
+			return
+		}
+
+		h.swap(current, parent)
+		current = parent
+	}
+}
+
+func (h *heap) down(current int) {
 	for h.hasLeftChild(current) {
 		smallest := leftChildIndex(current)
 
@@ -46,15 +70,12 @@ func (h *heap) delete(value *Conn) {
 		}
 
 		if (*h)[current].key < (*h)[smallest].key {
-			break
-		} else {
-			h.swap(current, smallest)
+			return
 		}
 
+		h.swap(current, smallest)
 		current = smallest
 	}
-
-	value.heapindex.Store(HeapRemoved)
 }
 
 func (h *heap) increase(value *Conn, key int64) {

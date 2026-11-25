@@ -75,3 +75,34 @@ func TestHeapIncrease(t *testing.T) {
 	AssertEqual(t, increased[1], h.pop())
 	AssertEqual(t, increased[2], h.pop())
 }
+
+func TestHeapDeleteKeepsInvariant(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+
+	for trial := 0; trial < 1000; trial++ {
+		var h heap
+
+		conns := make([]*Conn, 32)
+
+		for i := range conns {
+			conns[i] = &Conn{}
+			h.push(int64(r.Intn(1000)), conns[i])
+		}
+
+		for i := 0; i < 16; i++ {
+			h.delete(conns[r.Intn(len(conns))])
+
+			for j := 1; j < len(h); j++ {
+				if h[parentIndex(j)].key > h[j].key {
+					t.Fatalf("trial %d: heap invariant broken at index %d", trial, j)
+				}
+			}
+
+			for j := range h {
+				if int(h[j].value.heapindex.Load()) != j {
+					t.Fatalf("trial %d: stale heap index at %d", trial, j)
+				}
+			}
+		}
+	}
+}

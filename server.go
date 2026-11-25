@@ -29,6 +29,8 @@ const (
 	DefaultBufferSize          = 1 << 14
 	DefaultBufferFlushDeadline = time.Millisecond * 50
 	DefaultReadDeadline        = time.Second
+	DefaultWriteDeadline       = time.Second * 10
+	DefaultMaxMessageSize      = 1 << 24
 	DefaultEpollWaitDeadline   = time.Millisecond * 10
 	DefaultEpollEventSize      = 128
 )
@@ -47,6 +49,18 @@ func WithReadDeadline(deadline time.Duration) option {
 func WithWriteBufferDeadline(deadline time.Duration) option {
 	return func(s *Server) {
 		s.writeBufferDeadline = deadline
+	}
+}
+
+func WithWriteDeadline(deadline time.Duration) option {
+	return func(s *Server) {
+		s.writeDeadline = deadline
+	}
+}
+
+func WithMaxMessageSize(size int64) option {
+	return func(s *Server) {
+		s.maxMessageSize = size
 	}
 }
 
@@ -118,6 +132,8 @@ type Server struct {
 	listeners           []*listener
 	readDeadline        time.Duration
 	writeBufferDeadline time.Duration
+	writeDeadline       time.Duration
+	maxMessageSize      int64
 	epollWaitDuration   time.Duration
 	epollEventSize      int
 	readBufferSize      int
@@ -130,6 +146,8 @@ func New(handler *Handler, opts ...option) *Server {
 		listeners:           make([]*listener, runtime.GOMAXPROCS(0)),
 		readDeadline:        DefaultReadDeadline,
 		writeBufferDeadline: DefaultBufferFlushDeadline,
+		writeDeadline:       DefaultWriteDeadline,
+		maxMessageSize:      DefaultMaxMessageSize,
 		epollEventSize:      DefaultEpollEventSize,
 		epollWaitDuration:   DefaultEpollWaitDeadline,
 		readBufferSize:      DefaultBufferSize,
@@ -190,7 +208,9 @@ func (s *Server) Serve(port int) error {
 			&s.wbuffers,
 			s.readDeadline,
 			s.writeBufferDeadline,
+			s.writeDeadline,
 			s.writeBufferSize,
+			s.maxMessageSize,
 		)
 
 		lc := net.ListenConfig{
@@ -216,20 +236,34 @@ func (s *Server) Serve(port int) error {
 			return err
 		}
 
-		go func(pid int) {
-			for {
-				conn, err := s.listeners[pid].socket.Accept()
-				if err != nil {
-					s.error(err, true)
-					return
-				}
-
-				s.listeners[pid].register(connectionFd(conn), conn)
-			}
-		}(i)
+		go s.accept(s.listeners[i])
 	}
 
 	return nil
+}
+
+func (s *Server) accept(l *listener) {
+	var backoff time.Duration
+
+	for {
+		conn, err := l.socket.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+
+			s.error(err, false)
+
+			backoff = min(max(backoff*2, 5*time.Millisecond), time.Second)
+			time.Sleep(backoff)
+
+			continue
+		}
+
+		backoff = 0
+
+		l.register(connectionFd(conn), conn)
+	}
 }
 
 // Close closes all of the http servers
@@ -250,12 +284,36 @@ func (s *Server) error(err error, isFatal bool) {
 	}
 }
 
-func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
+func handshakeEnd(cb *circbuf) int {
+	b, err := cb.peek(cb.buffered())
+	if err != nil {
+		return -1
+	}
+
+	i := bytes.Index(b, []byte("\r\n\r\n"))
+	if i < 0 {
+		return -1
+	}
+
+	return i + 4
+}
+
+func acceptWs(conn *Conn, buf *rbuf, end int, rb *bufio.Reader) error {
+	request, err := buf.b.peek(end)
+	if err != nil {
+		return err
+	}
+
 	// wrap our read buffer in a temporary bufio reader
-	rb.Reset(buf.b)
+	rb.Reset(bytes.NewReader(request))
 
 	// https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.1
 	r, err := http.ReadRequest(rb)
+	if err != nil {
+		return err
+	}
+
+	err = buf.b.advanceRead(end)
 	if err != nil {
 		return err
 	}
@@ -281,7 +339,7 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	}
 
 	// check request header contains the 'Connection: Upgrade' and 'Upgrade: websocket' headers
-	if !strings.EqualFold(h.Get("Connection"), "upgrade") || !strings.EqualFold(h.Get("Upgrade"), "websocket") {
+	if !headerHasToken(h, "Connection", "upgrade") || !headerHasToken(h, "Upgrade", "websocket") {
 		return writeHeader(
 			conn.Conn,
 			http.StatusUpgradeRequired,
@@ -356,6 +414,18 @@ func acceptWs(conn *Conn, buf *rbuf, rb *bufio.Reader) error {
 	}
 
 	return nil
+}
+
+func headerHasToken(h http.Header, name, token string) bool {
+	for _, value := range h.Values(name) {
+		for _, t := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(t), token) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func connectionFd(conn net.Conn) int {

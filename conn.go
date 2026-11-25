@@ -45,22 +45,24 @@ type Conn struct {
 	writebuf       *wbuf              // acquired write buffer
 	quit           func(*Conn, error) // quit callback
 	flush          time.Duration      // flush interval
+	writeDeadline  time.Duration      // write deadline
 	mutex          sync.Mutex         // write buffer lock
 	heapindex      atomic.Int32       // index of this connection in timer heap
 	iscontinuation int32              // marks a continuation frame
 	isclosed       int32              // marks a connection as closed
-	upgraded       int32              // marks the connection been upgraded
+	isupgraded     int32              // marks the connection been upgraded
 	scheduled      bool               // marks for flush scheduling
 }
 
-func newBufConn(conn net.Conn, readbufpool, writebufpool *sync.Pool, flush time.Duration, shutdownCallback func(*Conn, error)) *Conn {
+func newBufConn(conn net.Conn, readbufpool, writebufpool *sync.Pool, flush, writeDeadline time.Duration, shutdownCallback func(*Conn, error)) *Conn {
 	c := &Conn{
-		Conn:         conn,
-		fd:           connectionFd(conn),
-		readbufpool:  readbufpool,
-		writebufpool: writebufpool,
-		flush:        flush,
-		quit:         shutdownCallback,
+		Conn:          conn,
+		fd:            connectionFd(conn),
+		readbufpool:   readbufpool,
+		writebufpool:  writebufpool,
+		flush:         flush,
+		writeDeadline: writeDeadline,
+		quit:          shutdownCallback,
 	}
 
 	c.heapindex.Store(HeapUnassigned)
@@ -97,17 +99,16 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 	c.mutex.Lock()
 
 	defer func() {
-		// call the callback to close the connection and remove it from epoll, if we are disconnecting
-		if disconnect {
-			c.quit(c, nil)
-		}
 		if c.writebuf != nil {
 			c.writebuf.b.Reset(nil)
 			c.writebufpool.Put(c.writebuf)
 			c.writebuf = nil
 		}
-		c.releaseReadBuffer()
 		c.mutex.Unlock()
+
+		if disconnect {
+			c.quit(c, nil)
+		}
 	}()
 
 	// if we don't have a write buffer, then get one from the pool
@@ -115,6 +116,8 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 		c.writebuf = c.writebufpool.Get().(*wbuf)
 		c.writebuf.b.Reset(c.Conn)
 	}
+
+	c.armWriteDeadline()
 
 	err := c.writebuf.c.WriteHeader(c.writebuf.b, header{
 		OpCode: opClose,
@@ -149,15 +152,13 @@ func (c *Conn) CloseWith(status CloseStatus, reason string, disconnect bool) err
 		// shutdown() to signal to the client the connection
 		// is being closed. conn.Close does not send a tcp FIN
 		// or FIN ACK packet. possibly a bug?)
-		err = unix.Shutdown(connectionFd(c.Conn), unix.SHUT_RDWR)
-		c.Conn.Close()
-		return err
+		return unix.Shutdown(c.fd, unix.SHUT_RDWR)
 	}
 
 	return nil
 }
 
-// CloseImmediatelyWith sends close frame to the connection immediately, discarding any buffered state.
+// CloseImmediatelyWith flushes any buffered state and sends close frame to the connection immediately.
 // if disconnect is specified as true, the underlying connection will be closed immediately
 func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnect bool) error {
 	// try to mark our connection as closed
@@ -168,42 +169,24 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 	c.mutex.Lock()
 
 	defer func() {
-		// call the callback to close the connection and remove it from epoll, if we are disconnecting
-		if disconnect {
-			c.quit(c, nil)
-		}
-		// return the buffer and remove it from this connection
 		if c.writebuf != nil {
 			c.writebuf.b.Reset(nil)
 			c.writebufpool.Put(c.writebuf)
 			c.writebuf = nil
 		}
-		c.releaseReadBuffer()
 		c.mutex.Unlock()
+
+		if disconnect {
+			c.quit(c, nil)
+		}
 	}()
-
-	hd, err := newWriteCodec().BuildHeader(header{
-		OpCode: opClose,
-		Fin:    true,
-		Length: int64(len(reason) + 2),
-	})
-
-	if err != nil {
-		return err
-	}
 
 	payload := make([]byte, len(reason)+2)
 
-	// write directly to the underlying connection
 	binary.BigEndian.PutUint16(payload, uint16(status))
 	copy(payload[2:], reason)
 
-	b := net.Buffers{
-		hd,
-		payload,
-	}
-
-	_, err = b.WriteTo(c.Conn)
+	err := c.writeControlLocked(opClose, payload)
 	if err != nil {
 		return err
 	}
@@ -214,11 +197,15 @@ func (c *Conn) CloseImmediatelyWith(status CloseStatus, reason string, disconnec
 		// shutdown() to signal to the client the connection
 		// is being closed. conn.Close does not send a tcp FIN
 		// or FIN ACK packet. possibly a bug?)
-		err = unix.Shutdown(connectionFd(c.Conn), unix.SHUT_RDWR)
-		c.Conn.Close()
-		return err
+		return unix.Shutdown(c.fd, unix.SHUT_RDWR)
 	}
 
+	return nil
+}
+
+func (c *Conn) Close() error {
+	c.close()
+	c.quit(c, nil)
 	return nil
 }
 
@@ -261,8 +248,28 @@ func (c *Conn) buffer() error {
 
 func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, error)) (int, error) {
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
 
+	n, err := c.writeLocked(op, size, wcb)
+	if err != nil && err != ErrConnectionAlreadyClosed {
+		if c.writebuf != nil {
+			c.writebuf.b.Reset(nil)
+			c.writebufpool.Put(c.writebuf)
+			c.writebuf = nil
+		}
+
+		c.close()
+		c.mutex.Unlock()
+		c.quit(c, err)
+
+		return n, err
+	}
+
+	c.mutex.Unlock()
+
+	return n, err
+}
+
+func (c *Conn) writeLocked(op opCode, size int, wcb func(buf *bufio.Writer) (int, error)) (int, error) {
 	// try to mark our connection as closed
 	if c.closed() {
 		return 0, ErrConnectionAlreadyClosed
@@ -273,6 +280,8 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 		c.writebuf = c.writebufpool.Get().(*wbuf)
 		c.writebuf.b.Reset(c.Conn)
 	}
+
+	c.armWriteDeadline()
 
 	// write the ws header and data to the buffer
 	err := c.writebuf.c.WriteHeader(c.writebuf.b, header{
@@ -303,40 +312,86 @@ func (c *Conn) write(op opCode, size int, wcb func(buf *bufio.Writer) (int, erro
 	if !c.scheduled {
 		c.scheduled = true
 
-		time.AfterFunc(c.flush, func() {
-			c.mutex.Lock()
-			defer func() {
-				// return the buffer and remove it from this connection
-				if c.writebuf != nil {
-					c.writebuf.b.Reset(nil)
-					c.writebufpool.Put(c.writebuf)
-					c.writebuf = nil
-				}
-
-				c.scheduled = false
-				c.mutex.Unlock()
-			}()
-
-			// someone else has flushed the buffer, so exit
-			if c.writebuf == nil {
-				return
-			}
-
-			if c.writebuf.b.Buffered() < 1 {
-				return
-			}
-
-			// write all data
-			err := c.writebuf.b.Flush()
-			if err != nil {
-				// mark the connection as closed and call the error callback
-				c.close()
-				c.quit(c, err)
-			}
-		})
+		time.AfterFunc(c.flush, c.flushScheduled)
 	}
 
 	return size, nil
+}
+
+func (c *Conn) armWriteDeadline() {
+	if c.writeDeadline > 0 {
+		_ = c.Conn.SetWriteDeadline(time.Now().Add(c.writeDeadline))
+	}
+}
+
+func (c *Conn) flushScheduled() {
+	c.mutex.Lock()
+
+	var err error
+
+	if c.writebuf != nil {
+		if c.writebuf.b.Buffered() > 0 {
+			c.armWriteDeadline()
+			err = c.writebuf.b.Flush()
+		}
+
+		c.writebuf.b.Reset(nil)
+		c.writebufpool.Put(c.writebuf)
+		c.writebuf = nil
+	}
+
+	c.scheduled = false
+	c.mutex.Unlock()
+
+	if err != nil {
+		c.close()
+		c.quit(c, err)
+	}
+}
+
+func (c *Conn) writeControl(op opCode, payload []byte) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	return c.writeControlLocked(op, payload)
+}
+
+func (c *Conn) writeControlLocked(op opCode, payload []byte) error {
+	c.armWriteDeadline()
+
+	h := header{
+		OpCode: op,
+		Fin:    true,
+		Length: int64(len(payload)),
+	}
+
+	if c.writebuf != nil && c.writebuf.b.Buffered() > 0 {
+		err := c.writebuf.c.WriteHeader(c.writebuf.b, h)
+		if err != nil {
+			return err
+		}
+
+		_, err = c.writebuf.b.Write(payload)
+		if err != nil {
+			return err
+		}
+
+		return c.writebuf.b.Flush()
+	}
+
+	hd, err := newWriteCodec().BuildHeader(h)
+	if err != nil {
+		return err
+	}
+
+	b := net.Buffers{
+		hd,
+		payload,
+	}
+
+	_, err = b.WriteTo(c.Conn)
+
+	return err
 }
 
 func (c *Conn) acquireReadBuffer() *rbuf {
@@ -389,5 +444,9 @@ func (c *Conn) close() bool {
 }
 
 func (c *Conn) upgrade() bool {
-	return atomic.CompareAndSwapInt32(&c.upgraded, 0, 1)
+	return atomic.CompareAndSwapInt32(&c.isupgraded, 0, 1)
+}
+
+func (c *Conn) upgraded() bool {
+	return atomic.LoadInt32(&c.isupgraded) == 1
 }
